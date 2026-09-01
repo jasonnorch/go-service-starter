@@ -22,11 +22,60 @@ import (
 // decoded value implements it, JSON calls Validate and reports a failure as
 // 422 — the request parsed, so it is not malformed; it is unacceptable.
 //
+// Either receiver works: JSON checks the value and a pointer to it, so
+// `func (r Request) Validate()` and `func (r *Request) Validate()` both take
+// effect for `JSON[Request]`.
+//
+// # The returned text is sent to the client
+//
+// Validate's error message is published verbatim as the response body's
+// message, because that is the entire value of a 422: telling the caller which
+// field is wrong so they can fix it. A fixed, generic message would make this
+// interface pointless.
+//
+// That makes the message a public API surface, and it constrains what may go
+// in it:
+//
+//	func (r CreateUser) Validate() error {
+//	    if r.Email == "" {
+//	        return errors.New("email is required")     // good: about the input
+//	    }
+//	    if err := r.checkUniqueness(); err != nil {
+//	        return fmt.Errorf("checking uniqueness: %w", err)   // WRONG: publishes
+//	    }                                                       // internal detail
+//	    return nil
+//	}
+//
+// Validate is for checking the shape of what was sent — required fields,
+// ranges, formats — using only the request's own contents. Anything that
+// consults a database, an upstream service, or process state belongs in the
+// handler, where its failure becomes a 500 with the cause logged rather than a
+// 422 with the cause published.
+//
 // Defined here, where it is consumed, rather than in a shared types package: a
 // request type satisfies it by having the method, and never has to import this
 // package to do so.
 type Validator interface {
 	Validate() error
+}
+
+// validatorFor returns v as a Validator, whichever receiver Validate was
+// declared with.
+//
+// The pointer check is not a nicety. A pointer-receiver Validate is the more
+// common Go spelling, and it is absent from T's method set — so checking only
+// the value would leave `JSON[Request]` silently skipping validation for
+// `func (*Request) Validate()`. Silence is the whole problem: nothing fails,
+// nothing logs, and unvalidated data reaches the handler looking checked.
+//
+// Both checks are needed rather than just the pointer one, because T may
+// already be a pointer type, and a **Request has no methods at all.
+func validatorFor[T any](v *T) (Validator, bool) {
+	if validator, ok := any(*v).(Validator); ok {
+		return validator, true
+	}
+	validator, ok := any(v).(Validator)
+	return validator, ok
 }
 
 // JSON reads the request body into a T.
@@ -66,8 +115,10 @@ func JSON[T any](w http.ResponseWriter, r *http.Request, maxBytes int64) (T, err
 		return v, respond.BadRequest("body must contain a single JSON object")
 	}
 
-	if validator, ok := any(v).(Validator); ok {
+	if validator, ok := validatorFor(&v); ok {
 		if err := validator.Validate(); err != nil {
+			// The message is published to the client deliberately — see the
+			// contract on Validator, which is what keeps that safe.
 			return v, respond.Unprocessable(err.Error()).Because(err)
 		}
 	}

@@ -110,11 +110,16 @@ func (g *Group) adapt(h HandlerFunc) http.Handler {
 	})
 }
 
-// pattern applies the group's prefix to a ServeMux pattern, keeping any method
-// where ServeMux expects it — at the front, not buried behind the prefix.
+// pattern applies the group's prefix to a ServeMux pattern.
+//
+// Only the path is prefixed. The method stays at the front where ServeMux
+// expects it, and the host stays immediately before the path — a prefix
+// inserted ahead of either produces a pattern that registers successfully and
+// then matches nothing.
 func (g *Group) pattern(pattern string) string {
-	method, path := splitPattern(pattern)
-	full := joinPrefix(g.prefix, path)
+	method, host, path := splitPattern(pattern)
+
+	full := host + joinPrefix(g.prefix, path)
 	if full == "" {
 		full = "/"
 	}
@@ -124,14 +129,27 @@ func (g *Group) pattern(pattern string) string {
 	return method + " " + full
 }
 
-// splitPattern separates a leading method from the path. ServeMux patterns are
-// "METHOD /path", "/path", or "METHOD host/path"; the method is whatever
-// precedes the first space.
-func splitPattern(pattern string) (method, path string) {
+// splitPattern breaks a ServeMux pattern into its three parts.
+//
+// The grammar is "[METHOD ][HOST]/[PATH]": the method is whatever precedes the
+// first space, and the host is whatever precedes the first slash after that.
+// Both are optional, so "/users", "GET /users", and "GET example.com/users" are
+// all valid and all have to survive being prefixed.
+//
+// A pattern with no slash at all — "GET users" — is treated as a path rather
+// than a host. ServeMux itself would reject it, but Group accepts it as a
+// convenience and joinPrefix supplies the leading slash; reading it as a host
+// would silently turn a route into an unreachable one.
+func splitPattern(pattern string) (method, host, path string) {
+	rest := pattern
 	if before, after, found := strings.Cut(pattern, " "); found {
-		return before, strings.TrimSpace(after)
+		method, rest = before, strings.TrimSpace(after)
 	}
-	return "", pattern
+
+	if slash := strings.Index(rest, "/"); slash >= 0 {
+		return method, rest[:slash], rest[slash:]
+	}
+	return method, "", rest
 }
 
 // joinPrefix concatenates two path segments without producing "//", which

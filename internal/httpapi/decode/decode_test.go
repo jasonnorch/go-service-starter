@@ -29,6 +29,19 @@ func (v validated) Validate() error {
 	return nil
 }
 
+// pointerValidated declares Validate on the pointer receiver, which is the more
+// common Go spelling and the one absent from the value's method set.
+type pointerValidated struct {
+	Name string `json:"name"`
+}
+
+func (v *pointerValidated) Validate() error {
+	if v.Name == "" {
+		return errors.New("name is required")
+	}
+	return nil
+}
+
 const oneMiB = 1 << 20
 
 func post(body string) (*httptest.ResponseRecorder, *http.Request) {
@@ -201,4 +214,66 @@ func TestJSONRunsValidate(t *testing.T) {
 			t.Errorf("decoded %+v", got)
 		}
 	})
+}
+
+// The failure this guards against is silent: with only a value assertion, a
+// pointer-receiver Validate is absent from T's method set, so validation is
+// skipped without an error, without a log line, and without anything to notice.
+// Unvalidated input reaches the handler looking checked.
+func TestJSONRunsPointerReceiverValidate(t *testing.T) {
+	t.Run("pointer receiver is found", func(t *testing.T) {
+		w, r := post(`{"name":""}`)
+
+		_, err := decode.JSON[pointerValidated](w, r, oneMiB)
+		e := assertStatus(t, err, http.StatusUnprocessableEntity)
+		if !strings.Contains(e.Message, "name is required") {
+			t.Errorf("message %q does not carry the validation failure", e.Message)
+		}
+	})
+
+	// T already being a pointer is why the value assertion is kept: a
+	// **pointerValidated has no methods at all.
+	t.Run("T that is itself a pointer", func(t *testing.T) {
+		w, r := post(`{"name":""}`)
+
+		_, err := decode.JSON[*pointerValidated](w, r, oneMiB)
+		assertStatus(t, err, http.StatusUnprocessableEntity)
+	})
+
+	t.Run("valid input still passes", func(t *testing.T) {
+		w, r := post(`{"name":"ada"}`)
+
+		got, err := decode.JSON[pointerValidated](w, r, oneMiB)
+		if err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if got.Name != "ada" {
+			t.Errorf("decoded %+v", got)
+		}
+	})
+}
+
+// Pins the published contract: Validate's text reaches the client verbatim.
+//
+// This is deliberate rather than incidental — a 422 whose body does not say
+// which field is wrong tells the caller nothing, and a fixed generic message
+// would make the Validator interface pointless. The cost is that the message is
+// a public API surface, which is why Validator's documentation restricts what
+// may go in it to facts about the request itself.
+//
+// If this test is ever changed to assert a generic message, the interface has
+// lost its purpose and should be removed rather than quietly neutered.
+func TestValidateMessageIsPublishedToTheClient(t *testing.T) {
+	w, r := post(`{"name":""}`)
+
+	_, err := decode.JSON[validated](w, r, oneMiB)
+	e := assertStatus(t, err, http.StatusUnprocessableEntity)
+
+	if e.Message != "name is required" {
+		t.Errorf("client message = %q, want the validator's own text", e.Message)
+	}
+	// And the cause is still attached for the server-side log.
+	if e.Unwrap() == nil {
+		t.Error("the validation error was not retained as the cause")
+	}
 }

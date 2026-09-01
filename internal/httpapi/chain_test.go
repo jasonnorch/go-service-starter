@@ -86,6 +86,36 @@ func TestGroupPrefixesRoutes(t *testing.T) {
 	}
 }
 
+// ServeMux patterns are "[METHOD ][HOST]/[PATH]", and only the path may be
+// prefixed. Prefixing the host instead produces a pattern that registers
+// happily and then matches nothing — "GET /v1/example.com/users" is a perfectly
+// legal route that no request will ever reach.
+func TestGroupPreservesTheHostComponent(t *testing.T) {
+	var order []string
+	mux := http.NewServeMux()
+	httpapi.NewGroup(mux, discardLogger()).Group("/v1").Handle("GET example.com/users", okHandler(&order))
+
+	t.Run("matches on the right host", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "http://example.com/v1/users", http.NoBody)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Errorf("GET example.com/v1/users = %d, want 200 — the host was prefixed as a path segment", rec.Code)
+		}
+	})
+
+	t.Run("the host is not a path segment", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "http://example.com/v1/example.com/users", http.NoBody)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+
+		if rec.Code == http.StatusOK {
+			t.Error("the route registered under a path containing the host")
+		}
+	})
+}
+
 func TestGroupNestsPrefixesAndMiddleware(t *testing.T) {
 	var order []string
 	mux := http.NewServeMux()
