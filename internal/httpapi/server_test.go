@@ -46,6 +46,49 @@ func serverConfig(port int, shutdown time.Duration) config.Server {
 	}
 }
 
+// requestResult is what the goroutines below report back from a request made
+// while the server is shutting down.
+type requestResult struct {
+	status int
+	body   string
+	err    error
+}
+
+// get issues a request in the background and returns the channel carrying its
+// outcome. The request deliberately has no deadline of its own — the point of
+// these tests is what the *server* does with a request that is still running.
+func get(url string) <-chan requestResult {
+	done := make(chan requestResult, 1)
+	go func() {
+		resp, err := http.Get(url) //nolint:noctx // deliberately has no deadline of its own
+		if err != nil {
+			done <- requestResult{err: err}
+			return
+		}
+		defer func() { _ = resp.Body.Close() }()
+		body, err := io.ReadAll(resp.Body)
+		done <- requestResult{status: resp.StatusCode, body: string(body), err: err}
+	}()
+	return done
+}
+
+// awaitRequest waits for that outcome, bounded.
+//
+// A bare receive would be correct but slow to diagnose: the default http.Client
+// has no timeout, so a drain regression that leaves the connection open blocks
+// until go test's global ten-minute deadline. That reports as "the package timed
+// out" rather than as the assertion that failed, ten minutes later.
+func awaitRequest(t *testing.T, done <-chan requestResult) requestResult {
+	t.Helper()
+	select {
+	case got := <-done:
+		return got
+	case <-time.After(10 * time.Second):
+		t.Fatal("the request never completed; the server did not drain it or close it")
+		return requestResult{}
+	}
+}
+
 // waitForServer blocks until the server answers, so a test never races the
 // goroutine that starts it.
 func waitForServer(t *testing.T, port int) {
@@ -91,22 +134,7 @@ func TestServeDrainsInFlightRequests(t *testing.T) {
 	}()
 	waitForServer(t, port)
 
-	type result struct {
-		status int
-		body   string
-		err    error
-	}
-	requestDone := make(chan result, 1)
-	go func() {
-		resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/slow", port)) //nolint:noctx // the point is a request with no deadline of its own
-		if err != nil {
-			requestDone <- result{err: err}
-			return
-		}
-		defer func() { _ = resp.Body.Close() }()
-		body, err := io.ReadAll(resp.Body)
-		requestDone <- result{status: resp.StatusCode, body: string(body), err: err}
-	}()
+	requestDone := get(fmt.Sprintf("http://127.0.0.1:%d/slow", port))
 
 	// Signal only once the handler is provably running.
 	select {
@@ -116,7 +144,7 @@ func TestServeDrainsInFlightRequests(t *testing.T) {
 	}
 	sigCh <- syscall.SIGTERM
 
-	got := <-requestDone
+	got := awaitRequest(t, requestDone)
 	if got.err != nil {
 		t.Fatalf("in-flight request failed instead of draining: %v", got.err)
 	}
@@ -257,22 +285,7 @@ func TestServeAbsorbsTheFirstSignalAfterContextShutdown(t *testing.T) {
 	}()
 	waitForServer(t, port)
 
-	type result struct {
-		status int
-		body   string
-		err    error
-	}
-	requestDone := make(chan result, 1)
-	go func() {
-		resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/slow", port)) //nolint:noctx // deliberately has no deadline of its own
-		if err != nil {
-			requestDone <- result{err: err}
-			return
-		}
-		defer func() { _ = resp.Body.Close() }()
-		body, err := io.ReadAll(resp.Body)
-		requestDone <- result{status: resp.StatusCode, body: string(body), err: err}
-	}()
+	requestDone := get(fmt.Sprintf("http://127.0.0.1:%d/slow", port))
 
 	select {
 	case <-handlerStarted:
@@ -285,7 +298,7 @@ func TestServeAbsorbsTheFirstSignalAfterContextShutdown(t *testing.T) {
 	cancel()
 	sigCh <- syscall.SIGTERM
 
-	got := <-requestDone
+	got := awaitRequest(t, requestDone)
 	if got.err != nil {
 		t.Fatalf("in-flight request was cut off instead of draining: %v", got.err)
 	}
