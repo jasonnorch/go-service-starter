@@ -1,0 +1,62 @@
+# Built-in defaults for every configuration key.
+#
+# This file is embedded into the binary, so the service starts and runs
+# correctly with no config file and no environment variables set. It is also the
+# documentation: config.example.yaml is a symlink to it, which is what stops the
+# defaults, the docs, and the example from drifting apart.
+#
+# Two things override it, in order:
+#
+#   1. ./config.yaml, or the file named by $CONFIG_FILE. Override-only — it does
+#      not need to be complete, and it is not required to exist.
+#   2. Environment variables, named by upper-casing the key and replacing dots
+#      with underscores: server.read_timeout becomes SERVER_READ_TIMEOUT.
+#
+# Every key must appear here even when its zero value would do. Reading this
+# file is what registers the key with the config loader, and an unregistered key
+# cannot be set by an environment variable.
+
+service:
+  # Identifies the service in logs and in the /info response. Change this first
+  # after forking.
+  name: go-service-starter
+
+  # "development" or "production". Only affects defaults that would be unsafe or
+  # unhelpful in the other mode; it is never a switch for business logic.
+  environment: development
+
+server:
+  port: 8080
+
+  # Time to read the whole request, headers and body. Deliberately short: a slow
+  # client holding a connection open is the cheapest denial of service there is.
+  read_timeout: 10s
+
+  # Time to write the response. Raise this if you add a long-running endpoint —
+  # it is the ceiling on a handler's total runtime, and exceeding it truncates
+  # the response with no error the client can distinguish from a network fault.
+  write_timeout: 30s
+
+  # How long an idle keep-alive connection is kept.
+  idle_timeout: 60s
+
+  # Grace period for in-flight requests to finish after a shutdown signal.
+  # Longer than write_timeout, so a request that started just before the signal
+  # can still complete rather than being cut off.
+  shutdown_timeout: 15s
+
+  # Maximum accepted request body, in bytes. Enforced by middleware, which
+  # rejects anything larger with 413 rather than reading it into memory.
+  body_limit: 1048576 # 1 MiB
+
+log:
+  # debug, info, warn, or error.
+  level: info
+
+  # "text" for human-readable output, "json" for structured output that a log
+  # aggregator can parse. Use json in production.
+  format: text
+
+  # Include the source file and line on every record. Useful while developing,
+  # noisy and measurably slower in production.
+  add_source: false
