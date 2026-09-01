@@ -76,3 +76,16 @@ jobs:
       # green run means the tests actually ran.
       - name: Test
         run: go test -race -count=1 ./...
+
+  docker:
+    name: Docker image builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # Builds only — nothing is pushed. A Dockerfile that stops building is
+      # otherwise discovered at deploy time, which is the worst moment for it.
+      - name: Build image
+        run: docker build --build-arg VERSION=ci -t go-service-starter:ci .
