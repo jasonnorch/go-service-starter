@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -226,7 +227,16 @@ func TestServeStopsWhenTheContextIsCanceled(t *testing.T) {
 	port := freePort(t)
 	ctx, cancel := context.WithCancel(t.Context())
 
-	server := httpapi.NewServer(http.NewServeMux(), serverConfig(port, 5*time.Second))
+	// Counts requests this server actually served, which is what makes the
+	// "stopped serving" assertion below independent of the port.
+	var served32 atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /ping", func(w http.ResponseWriter, _ *http.Request) {
+		served32.Add(1)
+		w.WriteHeader(http.StatusOK)
+	})
+
+	server := httpapi.NewServer(mux, serverConfig(port, 5*time.Second))
 	appCancelled := false
 
 	served := make(chan error, 1)
@@ -234,6 +244,15 @@ func TestServeStopsWhenTheContextIsCanceled(t *testing.T) {
 		served <- httpapi.Serve(ctx, server, make(chan os.Signal, 2), func() { appCancelled = true }, discardLogger(), 5*time.Second)
 	}()
 	waitForServer(t, port)
+
+	// Prove the server is serving before asking whether it stopped, or the
+	// check below passes just as well against a server that never worked.
+	if got := awaitRequest(t, get(fmt.Sprintf("http://127.0.0.1:%d/ping", port))); got.status != http.StatusOK {
+		t.Fatalf("the server did not answer before cancellation: status=%d err=%v", got.status, got.err)
+	}
+	if served32.Load() != 1 {
+		t.Fatalf("handler ran %d times before cancellation, want 1", served32.Load())
+	}
 
 	cancel()
 
@@ -250,10 +269,17 @@ func TestServeStopsWhenTheContextIsCanceled(t *testing.T) {
 		t.Error("appCancel was not called, so application resources would outlive the server")
 	}
 
-	// The listener really is closed, not merely reported as closed.
-	if conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), time.Second); err == nil {
-		_ = conn.Close()
-		t.Error("the server is still accepting connections after Serve returned")
+	// It really stopped serving, rather than merely reporting that it had.
+	//
+	// Asserted by counting what this handler served, not by dialing the port
+	// and requiring nothing to answer. freePort releases an ephemeral port
+	// before the server claims it, so anything else on the machine may hold it
+	// by now — that assertion tested the host's port table rather than Serve,
+	// and duly failed once on a busy CI runner. Whoever owns the port now, our
+	// handler must not run again.
+	_ = awaitRequest(t, get(fmt.Sprintf("http://127.0.0.1:%d/ping", port)))
+	if got := served32.Load(); got != 1 {
+		t.Errorf("the handler served %d requests, want 1 — the server is still serving after Serve returned", got)
 	}
 }
 
