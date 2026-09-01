@@ -15,10 +15,14 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/jasonnorch/go-service-starter/internal/config"
+	"github.com/jasonnorch/go-service-starter/internal/health"
 	"github.com/jasonnorch/go-service-starter/internal/httpapi"
+	"github.com/jasonnorch/go-service-starter/internal/httpapi/respond"
 	"github.com/jasonnorch/go-service-starter/internal/logging"
+	"github.com/jasonnorch/go-service-starter/internal/middleware"
 )
 
 // Run starts the service and blocks until it shuts down.
@@ -52,7 +56,12 @@ func Run(ctx context.Context, version string) error {
 	appCtx, appCancel := context.WithCancel(ctx)
 	defer appCancel()
 
-	server := httpapi.NewServer(newRouter(appCtx, cfg, logger), cfg.Server)
+	// Readiness checks are registered here as dependencies are added — a
+	// Postgres pool registers its own ping, and this package never learns what
+	// a Postgres pool is.
+	checker := health.New(logger, cfg.Server.ReadTimeout)
+
+	server := httpapi.NewServer(newRouter(cfg, logger, version, checker), cfg.Server)
 
 	// Buffered for two: the second signal is what forces a hung shutdown to
 	// finish, and signal.Notify drops signals rather than blocking on a full
@@ -67,11 +76,65 @@ func Run(ctx context.Context, version string) error {
 // newRouter assembles the handler tree. It lives here rather than in httpapi
 // because it is the wiring, not the machinery — this is the function a fork
 // edits to add routes.
-func newRouter(_ context.Context, _ *config.Config, _ *slog.Logger) http.Handler {
+func newRouter(cfg *config.Config, logger *slog.Logger, version string, checker *health.Checker) http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok\n"))
-	})
-	return mux
+	routes := httpapi.NewGroup(mux, logger)
+
+	routes.Handle("GET /healthz", checker.Live())
+	routes.Handle("GET /readyz", checker.Ready())
+	routes.HandleFunc("GET /info", infoHandler(cfg, logger, version))
+
+	// The global stack wraps the mux rather than each route, so it also covers
+	// the requests that match no route at all. Applying it per-route instead
+	// leaves 404s with no request ID, no security headers, and no log line —
+	// which is the shape of a path-scanning attempt, and exactly what should
+	// not be invisible.
+	//
+	// Fallback sits innermost of the wrappers, because ServeMux answers an
+	// unmatched route with a plain-text 404 or 405 of its own: the only two
+	// responses that would not be the JSON envelope, and the two a client meets
+	// first.
+	//
+	// The order below is the order they run in, and each position is a
+	// decision:
+	//
+	//   RequestID       first, so everything after it can report the ID
+	//   SecurityHeaders before anything can write a response
+	//   RequestLogger   outside Recover, so a panic is logged as the 500 it
+	//                   becomes rather than as nothing at all
+	//   Recover         inside the logger, outside every handler
+	//   BodyLimit       innermost, closest to whatever reads the body
+	return httpapi.Chain(
+		httpapi.Fallback(mux, logger),
+		middleware.RequestID(),
+		middleware.SecurityHeaders(),
+		middleware.RequestLogger(logger, "/healthz", "/readyz"),
+		middleware.Recover(logger),
+		middleware.BodyLimit(cfg.Server.BodyLimit, logger),
+	)
+}
+
+// info is what /info reports. It is deliberately not the whole *config.Config:
+// config.Config carries json tags so a protected admin endpoint can marshal it
+// directly, but an unauthenticated endpoint publishing the service's full
+// configuration is a default nobody should inherit by forking.
+type info struct {
+	Name        string `json:"name"`
+	Version     string `json:"version"`
+	Environment string `json:"environment"`
+	Uptime      string `json:"uptime"`
+}
+
+func infoHandler(cfg *config.Config, logger *slog.Logger, version string) httpapi.HandlerFunc {
+	started := time.Now()
+
+	return func(w http.ResponseWriter, _ *http.Request) error {
+		respond.JSON(w, logger, http.StatusOK, info{
+			Name:        cfg.Service.Name,
+			Version:     version,
+			Environment: cfg.Service.Environment,
+			Uptime:      time.Since(started).Round(time.Second).String(),
+		})
+		return nil
+	}
 }
