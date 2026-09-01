@@ -131,9 +131,24 @@ rather than something to remember.
 
 ### sigCh is buffered for two
 
-`signal.Notify` drops signals rather than blocking on a full channel. The second
-signal is what forces a hung shutdown to finish, so an unbuffered channel
-discards exactly the signal that matters most.
+`signal.Notify` drops signals rather than blocking on a full channel. The
+further signal is what forces a hung shutdown to finish, so an unbuffered
+channel discards exactly the signal that matters most.
+
+### Tests isolate the environment, not just the filesystem
+
+`internal/config`'s tests move the working directory so a stray `config.yaml`
+cannot reach them, and clear every `SERVICE_*`, `SERVER_*`, `LOG_*` and
+`CONFIG_FILE` variable inherited from the shell or the CI image. The first
+version did only the former, and `SERVER_PORT=31337 go test ./internal/config/`
+failed on the developer's machine while passing everywhere else — the same
+"a test reads the machine it runs on" failure this package was written to avoid,
+reintroduced in its own test suite.
+
+The same instinct applies to timing and ports. A test that asserts a 50ms
+deadline was honored by allowing a flat second is asserting almost nothing, and
+one that dials a released ephemeral port and requires nothing to answer is
+testing the host's port table rather than the code.
 
 ### Recover is inside RequestLogger, not outside
 
@@ -155,12 +170,97 @@ means a value that fails to marshal has already sent `200` and a partial body,
 leaving the client parsing truncated JSON with no indication anything went
 wrong.
 
-### The recorder implements Unwrap
+### The recorder implements Unwrap, Flush and FlushError
 
-`http.ResponseController` reaches `Flush`, `Hijack` and the per-request
-deadlines through `Unwrap`. Without it, wrapping the `ResponseWriter` for the
-access log silently breaks streaming responses and WebSocket upgrades — the
-classic cost of access-log middleware.
+`http.ResponseController` reaches `Hijack` and the per-request deadlines through
+`Unwrap`. Without it, wrapping the `ResponseWriter` for the access log silently
+breaks WebSocket upgrades — the classic cost of access-log middleware.
+
+Flushing needs more than `Unwrap`, and this took two attempts to get right.
+Unwrapping alone lets `ResponseController` reach past the recorder and flush the
+writer underneath, which commits the response and its status without the
+recorder ever knowing. Everything downstream then believes nothing has been
+sent: the access log reports a status the client may not have received, and
+`Recover` appends an error envelope onto a body already in flight. So
+`FlushError` intercepts and marks the response started at 200 — which is exactly
+what net/http does on a flush before any write.
+
+`Flush` exists alongside it for the older and still more common idiom,
+`if f, ok := w.(http.Flusher); ok`. Without it that assertion fails against the
+wrapper and the branch is skipped: the handler streams nothing, reports no
+error, and looks correct.
+
+### Recover wraps the writer when nothing else has
+
+Whether the response has already begun is the one thing `Recover` must know, so
+it cannot be delegated to whether some other middleware happened to wrap the
+writer first. With `RequestLogger` installed outside, its recorder is reused;
+used alone — which this kit invites, since everything in it composes — `Recover`
+wraps the writer itself.
+
+Without that, a handler that writes part of a body and then panics produces
+`{"partial":true{"error":{"code":"internal_error",…}}` — an unparseable
+response, from the middleware whose entire job is to prevent one.
+
+### Serve watches the context as well as the signal
+
+A caller holding a cancelable context expects cancelling it to stop the thing it
+was passed to. A `Serve` that watched only signals would accept a context and
+quietly ignore it, which is worse than never taking one: every caller has reason
+to believe cancellation works. It is also how a test stops the server without
+raising a signal at the whole process.
+
+The force-close count is taken from what the operator has actually done, not
+from what started the shutdown. A signal-initiated shutdown needs one more
+signal to force; a context-initiated one needs two, because the first has not
+been pressed yet. Counting it as the second press would abandon the drain on a
+single Ctrl-C — or on the routine SIGTERM an orchestrator sends during a
+rollout. Either way the rule an operator sees is the same: one press asks, two
+presses insist.
+
+### The readiness deadline is enforced, not offered
+
+`run` does not wait for every check goroutine. Waiting makes the timeout
+advisory: a check that ignores its context — a driver with its own timeout, a
+library that forgot one — holds `/readyz` open for as long as it likes and then
+reports success, answering 200 long after it should have answered at all. An
+orchestrator polling every two seconds does not care what the answer would
+eventually have been.
+
+Anything still running at the deadline is reported failed and left to finish.
+The results channel is buffered per check, so a late send never blocks and no
+goroutine is stranded.
+
+Each check also runs under its own recovery. A check panics in a goroutine of
+its own, outside the request's, where no HTTP middleware can reach it — so
+without that, a dependency that panics on a bad connection ends the process
+instead of turning readiness red. A nil check is the same hazard and is caught
+earlier, at `Register`.
+
+### Validate's message is published to the client
+
+`decode.JSON` puts the validator's error text straight into the response, which
+makes it a public API surface. That is deliberate: a 422 that does not say which
+field is wrong tells the caller nothing, and a fixed generic message would make
+the `Validator` interface pointless.
+
+The constraint that comes with it is documented on `Validator` itself —
+`Validate` describes the request and nothing else. Anything consulting a
+database, an upstream, or process state belongs in the handler, where failure is
+a logged 500 rather than a published 422.
+
+`decode.JSON` also rejects a `null` body outright. It is valid JSON, four
+characters long, and decodes into a pointer `T` as nil — which then satisfies
+`Validator` as a typed nil and panics inside a pointer-receiver `Validate`, or
+reaches the handler to be dereferenced there. Either way one client crashes a
+handler at will.
+
+### Group prefixes only the path
+
+ServeMux patterns are `[METHOD ][HOST]/[PATH]`. Prefixing anything but the path
+produces a pattern that registers successfully and then matches nothing:
+`GET example.com/users` under a `/v1` group would become
+`GET /v1/example.com/users`, a legal route no request can reach.
 
 ### Readiness reports which check failed, never why
 

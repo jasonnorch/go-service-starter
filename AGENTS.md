@@ -43,14 +43,32 @@ config.example.yaml        symlink to internal/config/defaults.yaml — never a 
 
 ## Conventions
 
-- Feature branch → PR into `main`. Open the PR; do not merge it.
-- No `Co-Authored-By`. Fleet attribution rules apply (`Assisted-by:`).
+- **Every change goes through a PR.** Feature branch → PR into `main`, no
+  exceptions for one-line fixes or config. Open it and stop; merging is Jason's.
+  The PR is where review happens, and CodeRabbit only reviews PRs — anything
+  pushed straight to `main` is a change nobody looked at.
+- **Every PR merges as a merge commit. Never squash, never rebase.** Both
+  replace the branch's commits with new ones, so SHAs referenced in comments and
+  changelogs stop existing. For the one-line-per-PR view, use
+  `git log --first-parent main`.
+- No `Co-Authored-By`, and no harness footers or session links in commits or PR
+  bodies. Fleet attribution rules apply: `Assisted-by:` naming the model, and
+  that is the whole record.
 - `gofmt` is not optional, and `go mod tidy` before committing.
 - Keep `README.md` in sync when a change touches endpoints, config keys, make
   targets, or the layout. It is the repo's front page and the reason anyone
   forks it.
 - Table-driven tests. Test the behavior that would hurt if it broke, not every
   function — and say in the test's name or a comment what the failure would be.
+- **Check that a new test fails without its fix.** Break the code, watch it go
+  red, put it back. Tests written for a bug you have just fixed pass for the
+  wrong reason more often than seems possible — during this repo's own review,
+  one passed because a different guard caught the same case, and another
+  asserted on a word that appeared in an unrelated error message.
+- **A test must not depend on the machine it runs on.** Not the environment, not
+  a released port, not a flat wall-clock bound standing in for a configured
+  timeout. All three have already produced a green suite that proved nothing
+  here.
 
 ## Rules that are load-bearing
 
@@ -74,7 +92,19 @@ accident.
   Never put an internal error's text in a response.
 - **`Recover` is mandatory and belongs inside `RequestLogger`.** Without it, a
   panicking handler drops the connection rather than returning 500. Outside the
-  logger, the resulting 500 is never logged.
+  logger, the resulting 500 is never logged. It does not depend on that
+  ordering to work, though — it wraps the writer itself when nothing else has.
+- **Anything that wraps a `ResponseWriter` must forward every capability it
+  hides.** `Unwrap` for `ResponseController`, and `Flush`/`FlushError` for
+  both it and the `w.(http.Flusher)` assertion. A wrapper that swallows a
+  capability makes streaming silently do nothing.
+- **Honor `context.Context`.** A function that takes one and ignores it is worse
+  than one that never took it, because every caller has reason to believe
+  cancellation works. The same goes for deadlines that are offered to callees
+  but not enforced on them.
+- **A `Validate` error message is published to the client verbatim.** It may
+  describe the request and nothing else — no database, upstream, or process
+  state. See the contract on `decode.Validator`.
 - **Liveness consults nothing.** A liveness probe that checks a dependency
   restarts every instance when that dependency blips.
 - **`config.example.yaml` is a symlink.** Replacing it with a copy is what lets
