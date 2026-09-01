@@ -43,6 +43,12 @@ func Run(ctx context.Context, version string) error {
 
 	// appCtx is what every background worker should take, so that appCancel in
 	// httpapi.Serve tears them down before the server begins draining.
+	//
+	// It is also what Serve watches for shutdown. Being derived from ctx, it
+	// carries the caller's cancellation through: canceling the context passed to
+	// Run stops the server. Without that, Run would accept a context and quietly
+	// ignore it, which is worse than not taking one — the caller has every
+	// reason to believe cancellation works.
 	appCtx, appCancel := context.WithCancel(ctx)
 	defer appCancel()
 
@@ -55,7 +61,7 @@ func Run(ctx context.Context, version string) error {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(sigCh)
 
-	return httpapi.Serve(server, sigCh, appCancel, logger, cfg.Server.ShutdownTimeout)
+	return httpapi.Serve(appCtx, server, sigCh, appCancel, logger, cfg.Server.ShutdownTimeout)
 }
 
 // newRouter assembles the handler tree. It lives here rather than in httpapi

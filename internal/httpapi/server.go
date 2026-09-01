@@ -28,11 +28,18 @@ func NewServer(handler http.Handler, cfg config.Server) *http.Server {
 	}
 }
 
-// Serve runs the server until a signal arrives or it fails, then shuts down.
+// Serve runs the server until it is asked to stop, then shuts down.
+//
+// Three things can ask: an operating-system signal, ctx being canceled, or
+// ListenAndServe failing. ctx matters as much as the signal — a caller that
+// holds a cancelable context expects canceling it to stop the thing it was
+// passed to, and a Serve that watched only signals would leave that caller
+// blocked until someone reached for the keyboard. It is also how a test stops
+// this function without raising a signal at the whole process.
 //
 // The ordering is the whole point of the function:
 //
-//  1. A signal arrives, or ListenAndServe returns an error.
+//  1. A signal arrives, ctx is canceled, or ListenAndServe returns an error.
 //  2. appCancel tears down application resources — background workers, pools —
 //     so nothing new is started while the server drains.
 //  3. Shutdown stops accepting connections and waits for in-flight requests,
@@ -47,6 +54,7 @@ func NewServer(handler http.Handler, cfg config.Server) *http.Server {
 //
 // Returns nil on a clean shutdown, whatever caused it.
 func Serve(
+	ctx context.Context,
 	server *http.Server,
 	sigCh <-chan os.Signal,
 	appCancel context.CancelFunc,
@@ -69,6 +77,11 @@ func Serve(
 		return fmt.Errorf("server error: %w", err)
 	case sig := <-sigCh:
 		logger.Info("shutdown signal received", "signal", sig.String())
+	case <-ctx.Done():
+		// context.Cause reports why rather than the generic "context canceled",
+		// which is the difference between a log line that explains a shutdown
+		// and one that only records it.
+		logger.Info("shutdown requested by context", "cause", context.Cause(ctx))
 	}
 
 	appCancel()

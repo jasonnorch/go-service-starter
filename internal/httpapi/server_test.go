@@ -1,6 +1,7 @@
 package httpapi_test
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
@@ -66,8 +67,15 @@ func TestServeDrainsInFlightRequests(t *testing.T) {
 	port := freePort(t)
 	const handlerDuration = 300 * time.Millisecond
 
+	// Closed by the handler on entry. Waiting on it is what makes this a test of
+	// draining rather than of timing: with a fixed sleep, a loaded machine can
+	// signal before the request has reached the handler, and the test then
+	// passes without a single in-flight request to drain.
+	handlerStarted := make(chan struct{})
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /slow", func(w http.ResponseWriter, _ *http.Request) {
+		close(handlerStarted)
 		time.Sleep(handlerDuration)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("finished"))
@@ -79,7 +87,7 @@ func TestServeDrainsInFlightRequests(t *testing.T) {
 
 	served := make(chan error, 1)
 	go func() {
-		served <- httpapi.Serve(server, sigCh, func() { appCancelled = true }, discardLogger(), 5*time.Second)
+		served <- httpapi.Serve(t.Context(), server, sigCh, func() { appCancelled = true }, discardLogger(), 5*time.Second)
 	}()
 	waitForServer(t, port)
 
@@ -100,8 +108,12 @@ func TestServeDrainsInFlightRequests(t *testing.T) {
 		requestDone <- result{status: resp.StatusCode, body: string(body), err: err}
 	}()
 
-	// Signal while the handler is still running.
-	time.Sleep(handlerDuration / 3)
+	// Signal only once the handler is provably running.
+	select {
+	case <-handlerStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the request never reached the handler")
+	}
 	sigCh <- syscall.SIGTERM
 
 	got := <-requestDone
@@ -133,8 +145,14 @@ func TestServeSecondSignalForcesClose(t *testing.T) {
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })
 
+	// Without this the test can send both signals before the request reaches
+	// the handler, in which case there is nothing stuck to force past and the
+	// test passes without exercising the forced close at all.
+	handlerStarted := make(chan struct{})
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /stuck", func(_ http.ResponseWriter, _ *http.Request) {
+		close(handlerStarted)
 		<-release // never returns during the test: the case the timeout exists for
 	})
 
@@ -145,7 +163,7 @@ func TestServeSecondSignalForcesClose(t *testing.T) {
 
 	served := make(chan error, 1)
 	go func() {
-		served <- httpapi.Serve(server, sigCh, func() {}, discardLogger(), time.Minute)
+		served <- httpapi.Serve(t.Context(), server, sigCh, func() {}, discardLogger(), time.Minute)
 	}()
 	waitForServer(t, port)
 
@@ -153,7 +171,11 @@ func TestServeSecondSignalForcesClose(t *testing.T) {
 		//nolint:noctx,bodyclose // the response never arrives; the handler is stuck by design
 		_, _ = http.Get(fmt.Sprintf("http://127.0.0.1:%d/stuck", port))
 	}()
-	time.Sleep(200 * time.Millisecond)
+	select {
+	case <-handlerStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the request never reached the stuck handler")
+	}
 
 	sigCh <- syscall.SIGINT
 	sigCh <- syscall.SIGINT
@@ -165,6 +187,45 @@ func TestServeSecondSignalForcesClose(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("a second signal did not force the shutdown; it waited on the stuck handler")
+	}
+}
+
+// Canceling the context that Serve was given stops it, with the same drain as a
+// signal. A Serve that watched only signals would accept a context and quietly
+// ignore it, leaving any caller holding a cancelable one blocked until somebody
+// reached for the keyboard.
+func TestServeStopsWhenTheContextIsCanceled(t *testing.T) {
+	port := freePort(t)
+	ctx, cancel := context.WithCancel(t.Context())
+
+	server := httpapi.NewServer(http.NewServeMux(), serverConfig(port, 5*time.Second))
+	appCancelled := false
+
+	served := make(chan error, 1)
+	go func() {
+		served <- httpapi.Serve(ctx, server, make(chan os.Signal, 2), func() { appCancelled = true }, discardLogger(), 5*time.Second)
+	}()
+	waitForServer(t, port)
+
+	cancel()
+
+	select {
+	case err := <-served:
+		if err != nil {
+			t.Errorf("Serve returned %v, want nil — cancellation is a clean shutdown, not a failure", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Serve ignored its context and kept serving")
+	}
+
+	if !appCancelled {
+		t.Error("appCancel was not called, so application resources would outlive the server")
+	}
+
+	// The listener really is closed, not merely reported as closed.
+	if conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), time.Second); err == nil {
+		_ = conn.Close()
+		t.Error("the server is still accepting connections after Serve returned")
 	}
 }
 
@@ -184,7 +245,7 @@ func TestServeReportsListenFailure(t *testing.T) {
 
 	served := make(chan error, 1)
 	go func() {
-		served <- httpapi.Serve(server, make(chan os.Signal, 2), func() { appCancelled = true }, discardLogger(), time.Second)
+		served <- httpapi.Serve(t.Context(), server, make(chan os.Signal, 2), func() { appCancelled = true }, discardLogger(), time.Second)
 	}()
 
 	select {
