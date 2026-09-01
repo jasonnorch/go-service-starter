@@ -1,0 +1,37 @@
+language: en-US
+
+reviews:
+  auto_review:
+    enabled: true
+    base_branches:
+      - main
+
+  # Review progress is reported as a check run (review_progress, on by
+  # default), so the "review in progress" fortune and the "review skipped"
+  # status comments only add PR comments — and every bot comment is a GitHub
+  # notification email. The walkthrough and inline findings are unaffected.
+  review_status: false
+  in_progress_fortune: false
+
+  pre_merge_checks:
+    # Off, matching the other Go repos in the fleet, but for a reason measured
+    # here rather than inherited.
+    #
+    # The check counts every function, and tests are the bulk of this repo: 90
+    # test functions against 57 exported non-test ones. Go convention gives a
+    # test function no doc comment, so the all-in figure lands near 27% while
+    # the number that reflects the code's actual state — exported non-test
+    # functions carrying a doc comment — is 82%. The gap is the measurement,
+    # not the documentation.
+    #
+    # Dropping tests via path_filters would clear the threshold and cost real
+    # coverage: CodeRabbit has caught genuine bugs in test files elsewhere in
+    # the fleet. Lowering the threshold to whatever passes today would carry no
+    # signal either.
+    #
+    # The remaining 18% is one block: the named constructors in
+    # internal/httpapi/respond/error.go share a single comment above the group
+    # rather than one each. Worth closing on its own terms, not by tuning a
+    # percentage.
+    docstrings:
+      mode: "off"
