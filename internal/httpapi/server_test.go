@@ -229,6 +229,129 @@ func TestServeStopsWhenTheContextIsCanceled(t *testing.T) {
 	}
 }
 
+// After a context-initiated shutdown, the operator has pressed nothing yet — so
+// the first signal to arrive means "shut down", which is already happening, and
+// must not abandon the drain. Counting it as the second press would cut every
+// in-flight request on a single Ctrl-C, and on the routine SIGTERM an
+// orchestrator sends during a rollout.
+func TestServeAbsorbsTheFirstSignalAfterContextShutdown(t *testing.T) {
+	port := freePort(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	const handlerDuration = 400 * time.Millisecond
+
+	handlerStarted := make(chan struct{})
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /slow", func(w http.ResponseWriter, _ *http.Request) {
+		close(handlerStarted)
+		time.Sleep(handlerDuration)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("finished"))
+	})
+
+	server := httpapi.NewServer(mux, serverConfig(port, 10*time.Second))
+	sigCh := make(chan os.Signal, 2)
+
+	served := make(chan error, 1)
+	go func() {
+		served <- httpapi.Serve(ctx, server, sigCh, func() {}, discardLogger(), 10*time.Second)
+	}()
+	waitForServer(t, port)
+
+	type result struct {
+		status int
+		body   string
+		err    error
+	}
+	requestDone := make(chan result, 1)
+	go func() {
+		resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/slow", port)) //nolint:noctx // deliberately has no deadline of its own
+		if err != nil {
+			requestDone <- result{err: err}
+			return
+		}
+		defer func() { _ = resp.Body.Close() }()
+		body, err := io.ReadAll(resp.Body)
+		requestDone <- result{status: resp.StatusCode, body: string(body), err: err}
+	}()
+
+	select {
+	case <-handlerStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the request never reached the handler")
+	}
+
+	// Context first, then a single signal — the ordering that used to force a
+	// close and cut the request off mid-response.
+	cancel()
+	sigCh <- syscall.SIGTERM
+
+	got := <-requestDone
+	if got.err != nil {
+		t.Fatalf("in-flight request was cut off instead of draining: %v", got.err)
+	}
+	if got.status != http.StatusOK || got.body != "finished" {
+		t.Errorf("in-flight request = %d %q, want 200 %q", got.status, got.body, "finished")
+	}
+
+	select {
+	case err := <-served:
+		if err != nil {
+			t.Errorf("Serve returned %v, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Serve did not return")
+	}
+}
+
+// ...but the second one still means it, whatever started the shutdown.
+func TestServeForcesCloseOnTheSecondSignalAfterContextShutdown(t *testing.T) {
+	port := freePort(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+
+	handlerStarted := make(chan struct{})
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /stuck", func(_ http.ResponseWriter, _ *http.Request) {
+		close(handlerStarted)
+		<-release
+	})
+
+	// A grace period long enough that reaching it would fail the test: only the
+	// second signal can make this return in time.
+	server := httpapi.NewServer(mux, serverConfig(port, time.Minute))
+	sigCh := make(chan os.Signal, 2)
+
+	served := make(chan error, 1)
+	go func() {
+		served <- httpapi.Serve(ctx, server, sigCh, func() {}, discardLogger(), time.Minute)
+	}()
+	waitForServer(t, port)
+
+	go func() {
+		//nolint:noctx,bodyclose // the response never arrives; the handler is stuck by design
+		_, _ = http.Get(fmt.Sprintf("http://127.0.0.1:%d/stuck", port))
+	}()
+	select {
+	case <-handlerStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the request never reached the stuck handler")
+	}
+
+	cancel()
+	sigCh <- syscall.SIGTERM // absorbed
+	sigCh <- syscall.SIGTERM // insists
+
+	select {
+	case err := <-served:
+		if err != nil {
+			t.Errorf("Serve returned %v, want nil", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("two signals after a context shutdown did not force the close")
+	}
+}
+
 // A port already in use has to surface as an error rather than a process that
 // looks started and is serving nothing.
 func TestServeReportsListenFailure(t *testing.T) {

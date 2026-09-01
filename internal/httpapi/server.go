@@ -44,13 +44,21 @@ func NewServer(handler http.Handler, cfg config.Server) *http.Server {
 //     so nothing new is started while the server drains.
 //  3. Shutdown stops accepting connections and waits for in-flight requests,
 //     bounded by shutdownTimeout.
-//  4. A second signal, or an expired timeout, forces the connections closed.
+//  4. A further signal, or an expired timeout, forces the connections closed.
 //
 // Step 4 is what stops a shutdown from hanging. A request that ignores its
 // context will otherwise hold the process open for the whole grace period, and
 // an operator who has already pressed Ctrl-C once expects the second press to
 // mean it. sigCh must be buffered with room for that second signal — an
 // unbuffered channel drops it, because signal.Notify never blocks.
+//
+// "Further" is counted from what the operator has actually done, not from when
+// the shutdown began. A context-initiated shutdown has consumed no signals, so
+// the first one to arrive means "shut down" — the thing already happening — and
+// is absorbed; only the second forces. Counting it as the second press instead
+// would abandon the drain on a single Ctrl-C, and worse, on the routine SIGTERM
+// an orchestrator sends during a rollout. Either way the rule an operator sees
+// is the same: one press asks, two presses insist.
 //
 // Returns nil on a clean shutdown, whatever caused it.
 func Serve(
@@ -71,6 +79,11 @@ func Serve(
 		}
 	}()
 
+	// How many further signals must arrive before connections are forced closed.
+	// See the "further" note in the doc comment: this counts the operator's
+	// presses, not the shutdown's causes.
+	signalsBeforeForce := 1
+
 	select {
 	case err := <-serverErr:
 		appCancel()
@@ -82,22 +95,33 @@ func Serve(
 		// which is the difference between a log line that explains a shutdown
 		// and one that only records it.
 		logger.Info("shutdown requested by context", "cause", context.Cause(ctx))
+		signalsBeforeForce = 2
 	}
 
 	appCancel()
 
-	// Watches for a second signal for as long as the graceful shutdown below is
+	// Watches for further signals for as long as the graceful shutdown below is
 	// still running, and exits with it either way so the goroutine cannot
 	// outlive the function.
 	shutdownDone := make(chan struct{})
 	go func() {
-		select {
-		case sig := <-sigCh:
-			logger.Warn("second signal received, forcing close", "signal", sig.String())
-			if err := server.Close(); err != nil {
-				logger.Error("server close failed", "error", err)
+		remaining := signalsBeforeForce
+		for {
+			select {
+			case sig := <-sigCh:
+				remaining--
+				if remaining > 0 {
+					logger.Info("shutdown already in progress", "signal", sig.String())
+					continue
+				}
+				logger.Warn("signal received during shutdown, forcing close", "signal", sig.String())
+				if err := server.Close(); err != nil {
+					logger.Error("server close failed", "error", err)
+				}
+				return
+			case <-shutdownDone:
+				return
 			}
-		case <-shutdownDone:
 		}
 	}()
 	defer close(shutdownDone)
