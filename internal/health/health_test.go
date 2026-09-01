@@ -156,7 +156,9 @@ func TestReadyRunsChecksConcurrently(t *testing.T) {
 // A check that ignores its deadline would otherwise hold the probe open, which
 // is indistinguishable from the service being down.
 func TestReadyBoundsSlowChecksByTheTimeout(t *testing.T) {
-	checker := health.New(discard(), 50*time.Millisecond)
+	const timeout = 50 * time.Millisecond
+
+	checker := health.New(discard(), timeout)
 	checker.Register("slow", func(ctx context.Context) error {
 		<-ctx.Done()
 		return ctx.Err()
@@ -165,7 +167,7 @@ func TestReadyBoundsSlowChecksByTheTimeout(t *testing.T) {
 	start := time.Now()
 	status, got := probe(t, checker.Ready())
 
-	if elapsed := time.Since(start); elapsed > time.Second {
+	if elapsed := time.Since(start); elapsed > 5*timeout {
 		t.Errorf("the probe took %s; the timeout was not applied", elapsed)
 	}
 	if status != http.StatusServiceUnavailable {
@@ -245,7 +247,12 @@ func TestReadyDoesNotWaitForACheckThatIgnoresTheContext(t *testing.T) {
 	status, got := probe(t, checker.Ready())
 	elapsed := time.Since(start)
 
-	if elapsed > time.Second {
+	// Bounded relative to the configured timeout rather than by a flat second.
+	// A flat bound is twenty times the deadline here, so an implementation that
+	// stalled readiness for half a second would pass while breaking the very
+	// contract this test exists to check. Five times leaves room for scheduler
+	// variance under -race and nothing more.
+	if elapsed > 5*timeout {
 		t.Errorf("the probe took %s against a %s timeout; it waited for the stubborn check", elapsed, timeout)
 	}
 	if status != http.StatusServiceUnavailable {
