@@ -1,0 +1,78 @@
+name: Tests
+
+# Runs on pull requests, and as a reusable workflow so anything that builds or
+# publishes can call it rather than shipping untested code.
+#
+# Deliberately no `push` trigger on branches: a PR already runs this, and adding
+# one would run the whole suite twice for every push.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Build, vet, lint and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # checkout leaves GITHUB_TOKEN in .git/config by default, where any
+          # later step — including third-party actions — can read it. Nothing
+          # in this job talks to the remote, so it is not needed.
+          persist-credentials: false
+
+      - uses: actions/setup-go@v7
+        with:
+          # Read from go.mod, so the CI toolchain cannot drift from the one the
+          # module declares.
+          go-version-file: go.mod
+          cache: true
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt'd:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      # -diff reports the drift without causing it, so the check cannot leave a
+      # dirty tree behind the way `go mod tidy` would.
+      - name: go mod tidy is clean
+        run: go mod tidy -diff
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: Build
+        run: go build ./...
+
+      # Installed from source rather than through a third-party action: fewer
+      # external actions running in a job that holds a repository token. The
+      # version is pinned so CI cannot start failing because upstream enabled a
+      # new check — bump it deliberately.
+      - name: Install golangci-lint
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.1
+
+      # The whole tree, not just new findings. This repo starts with no backlog,
+      # and the point of a starter is that it stays that way.
+      #
+      # The issue caps are disabled for the same reason as in the Makefile:
+      # golangci-lint reports at most 50 per linter and 3 per identical message
+      # by default, which on a gate means a PR can pass having been told about
+      # only some of what it introduced.
+      - name: golangci-lint
+        run: golangci-lint run --timeout 10m --max-issues-per-linter=0 --max-same-issues=0 ./...
+
+      # -race because the server, the health checks and the shutdown path are
+      # all concurrent, and a data race that only shows up under load is not
+      # something to find in production. -count=1 defeats the test cache, so a
+      # green run means the tests actually ran.
+      - name: Test
+        run: go test -race -count=1 ./...
