@@ -13,6 +13,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"reflect"
 	"strings"
 
 	"github.com/jasonnorch/go-service-starter/internal/httpapi/respond"
@@ -57,6 +58,29 @@ import (
 // package to do so.
 type Validator interface {
 	Validate() error
+}
+
+// isNil reports whether the decoded value is a nil of a nilable kind.
+//
+// It cannot be written as `any(v) == nil`: a nil *Request stored in an
+// interface is a non-nil interface holding a typed nil, which compares unequal
+// to nil and still satisfies any interface its method set covers. That is the
+// whole reason the panic this guards is possible.
+//
+// Only pointer T is affected. A value T decodes `null` into its zero value,
+// which is a legitimate struct that Validate — if the type has one — judges on
+// its merits like any other input.
+func isNil[T any](v T) bool {
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Invalid:
+		// The interface itself was nil, which only happens for an interface T.
+		return true
+	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Interface, reflect.Func, reflect.Chan:
+		return rv.IsNil()
+	default:
+		return false
+	}
 }
 
 // validatorFor returns v as a Validator, whichever receiver Validate was
@@ -113,6 +137,15 @@ func JSON[T any](w http.ResponseWriter, r *http.Request, maxBytes int64) (T, err
 	// that.
 	if err := dec.Decode(new(json.RawMessage)); !errors.Is(err, io.EOF) {
 		return v, respond.BadRequest("body must contain a single JSON object")
+	}
+
+	// A body of `null` is valid JSON and decodes into a pointer T as nil. Left
+	// alone it reaches the handler as a nil pointer to be dereferenced there,
+	// and reaches Validate first — where a pointer receiver dereferences it and
+	// panics, since a typed nil still satisfies the interface. Either way one
+	// client sending four characters produces a crash rather than a response.
+	if isNil(v) {
+		return v, respond.BadRequest("request body must be a JSON object, not null")
 	}
 
 	if validator, ok := validatorFor(&v); ok {

@@ -277,3 +277,31 @@ func TestValidateMessageIsPublishedToTheClient(t *testing.T) {
 		t.Error("the validation error was not retained as the cause")
 	}
 }
+
+// A body of `null` is valid JSON, four characters long, and decodes into a
+// pointer T as nil. Before this guard it reached Validate, where a pointer
+// receiver dereferenced it: any client could crash a handler at will.
+func TestJSONRejectsANullBody(t *testing.T) {
+	t.Run("pointer T does not panic", func(t *testing.T) {
+		w, r := post(`null`)
+
+		_, err := decode.JSON[*pointerValidated](w, r, oneMiB)
+		e := assertStatus(t, err, http.StatusBadRequest)
+		if !strings.Contains(e.Message, "null") {
+			t.Errorf("message %q does not say what was wrong", e.Message)
+		}
+	})
+
+	// A value T decodes null into its zero value, which is a legitimate struct
+	// judged on its merits like any other input — so the validator runs and
+	// reports the missing field rather than the body being null.
+	t.Run("value T is judged by its validator", func(t *testing.T) {
+		w, r := post(`null`)
+
+		_, err := decode.JSON[validated](w, r, oneMiB)
+		e := assertStatus(t, err, http.StatusUnprocessableEntity)
+		if !strings.Contains(e.Message, "name is required") {
+			t.Errorf("message %q", e.Message)
+		}
+	})
+}
