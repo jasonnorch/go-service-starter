@@ -41,8 +41,17 @@ server:
   idle_timeout: 60s
 
   # Grace period for in-flight requests to finish after a shutdown signal.
-  # Longer than write_timeout, so a request that started just before the signal
-  # can still complete rather than being cut off.
+  #
+  # Deliberately *shorter* than write_timeout, which does mean a request that
+  # began just before the signal and then used its full write window is cut off.
+  # That trade is forced from outside: an orchestrator sends SIGKILL a fixed time
+  # after SIGTERM — 30s by default on Kubernetes — so a grace period at or above
+  # write_timeout would not be honored anyway. The process would be killed
+  # mid-drain instead of closing its own connections, which is strictly worse:
+  # nothing gets to finish and nothing gets logged.
+  #
+  # Raise this only together with terminationGracePeriodSeconds (or whatever
+  # your platform calls it), and keep it comfortably below that number.
   shutdown_timeout: 15s
 
   # Maximum accepted request body, in bytes. Enforced by middleware, which

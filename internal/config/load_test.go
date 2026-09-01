@@ -10,13 +10,48 @@ import (
 	"github.com/jasonnorch/go-service-starter/internal/config"
 )
 
-// loadIn runs Load with the working directory set to an empty temp dir, so a
-// config.yaml sitting in the repo root cannot reach the test. That is the exact
-// failure this package exists to prevent, and a test that reads the developer's
-// machine would reintroduce it here first.
+// configEnvPrefixes are the top-level sections of defaults.yaml. Viper maps
+// service.name onto SERVICE_NAME, so any variable carrying one of these
+// prefixes can change what Load returns. Matching on the prefix rather than
+// listing every key means a new key under an existing section is isolated
+// automatically; only a new top-level section needs adding here.
+var configEnvPrefixes = []string{"SERVICE_", "SERVER_", "LOG_"}
+
+// isolate removes every input Load reads except the embedded defaults: the
+// working directory is moved somewhere with no config.yaml, and any
+// configuration variable inherited from the shell or the CI runner is cleared.
+//
+// Call it first in a test, before setting the variables that test needs.
+//
+// Without the environment half, a developer with SERVER_PORT exported — or a CI
+// image that sets LOG_FORMAT — gets different results from the same code. That
+// is precisely the failure this package was built to avoid, and a test suite
+// that reads the machine it runs on would reintroduce it here first.
+//
+// Clearing to empty rather than unsetting is deliberate and sufficient: Viper
+// ignores an empty environment variable unless AllowEmptyEnv is set, which it
+// is not, and t.Setenv restores the previous value when the test ends.
+func isolate(t *testing.T, dir string) {
+	t.Helper()
+
+	t.Setenv(config.ConfigFileEnv, "")
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+		for _, prefix := range configEnvPrefixes {
+			if strings.HasPrefix(key, prefix) {
+				t.Setenv(key, "")
+				break
+			}
+		}
+	}
+
+	t.Chdir(dir)
+}
+
+// loadIn isolates the environment, then loads.
 func loadIn(t *testing.T, dir string) (*config.Config, error) {
 	t.Helper()
-	t.Chdir(dir)
+	isolate(t, dir)
 	return config.Load()
 }
 
@@ -59,12 +94,15 @@ func TestLoadDefaultsAreCompleteAndValid(t *testing.T) {
 // embedded defaults being read. If that read is ever removed or reordered, the
 // service keeps starting and quietly ignores every environment variable.
 func TestLoadEnvOverridesDefault(t *testing.T) {
+	// isolate first, then set: the helper clears configuration variables, so
+	// setting them beforehand would wipe the test's own setup.
+	isolate(t, t.TempDir())
 	t.Setenv("SERVER_PORT", "9000")
 	t.Setenv("SERVER_READ_TIMEOUT", "42s")
 	t.Setenv("LOG_FORMAT", "json")
 	t.Setenv("LOG_ADD_SOURCE", "true")
 
-	cfg, err := loadIn(t, t.TempDir())
+	cfg, err := config.Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -106,8 +144,10 @@ func TestLoadLayerPrecedence(t *testing.T) {
 	})
 
 	t.Run("env overrides file", func(t *testing.T) {
+		isolate(t, dir)
 		t.Setenv("SERVER_PORT", "7777")
-		cfg, err := loadIn(t, dir)
+
+		cfg, err := config.Load()
 		if err != nil {
 			t.Fatalf("Load: %v", err)
 		}
@@ -121,9 +161,11 @@ func TestLoadConfigFileEnv(t *testing.T) {
 	t.Run("named file is read", func(t *testing.T) {
 		dir := t.TempDir()
 		path := writeConfig(t, dir, "elsewhere.yaml", "service:\n  name: renamed\n")
+
+		isolate(t, t.TempDir())
 		t.Setenv(config.ConfigFileEnv, path)
 
-		cfg, err := loadIn(t, t.TempDir())
+		cfg, err := config.Load()
 		if err != nil {
 			t.Fatalf("Load: %v", err)
 		}
@@ -135,9 +177,12 @@ func TestLoadConfigFileEnv(t *testing.T) {
 	// Naming a file explicitly and having it silently ignored is how a
 	// deployment runs on defaults while everyone believes it is configured.
 	t.Run("named file that is missing is an error", func(t *testing.T) {
-		t.Setenv(config.ConfigFileEnv, filepath.Join(t.TempDir(), "absent.yaml"))
+		missing := filepath.Join(t.TempDir(), "absent.yaml")
 
-		if _, err := loadIn(t, t.TempDir()); err == nil {
+		isolate(t, t.TempDir())
+		t.Setenv(config.ConfigFileEnv, missing)
+
+		if _, err := config.Load(); err == nil {
 			t.Fatal("Load succeeded with CONFIG_FILE naming a missing file, want an error")
 		}
 	})
@@ -148,6 +193,27 @@ func TestLoadConfigFileEnv(t *testing.T) {
 			t.Fatalf("Load with no %s: %v", config.DefaultConfigFile, err)
 		}
 	})
+}
+
+// Guards the guard. A developer with SERVER_PORT exported, or a CI image that
+// sets LOG_FORMAT, would otherwise change what every baseline test above reads —
+// and the failure would appear on one machine and nowhere else, which is the
+// exact bug this package is built around.
+func TestIsolateClearsInheritedConfigEnv(t *testing.T) {
+	t.Setenv("SERVER_PORT", "31337")
+	t.Setenv("LOG_FORMAT", "json")
+	t.Setenv(config.ConfigFileEnv, "/nonexistent/inherited.yaml")
+
+	cfg, err := loadIn(t, t.TempDir())
+	if err != nil {
+		t.Fatalf("Load: %v — an inherited CONFIG_FILE was not cleared", err)
+	}
+	if cfg.Server.Port != 8080 {
+		t.Errorf("server.port = %d, want the 8080 default — an inherited SERVER_PORT reached Load", cfg.Server.Port)
+	}
+	if cfg.Log.Format != config.FormatText {
+		t.Errorf("log.format = %q, want the text default — an inherited LOG_FORMAT reached Load", cfg.Log.Format)
+	}
 }
 
 func TestLoadRejectsInvalidConfig(t *testing.T) {
