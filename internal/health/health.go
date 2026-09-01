@@ -13,6 +13,8 @@ package health
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"maps"
 	"net/http"
@@ -51,7 +53,28 @@ func New(logger *slog.Logger, timeout time.Duration) *Checker {
 }
 
 // Register adds a readiness check. A repeated name replaces the earlier check.
+//
+// A nil check is recorded as one that always fails, and logged at registration.
+// Storing it as-is would call a nil function during a probe, and that panic
+// happens in a goroutine of its own where no HTTP middleware can recover it —
+// the process dies, at probe time, rather than at the wiring mistake that
+// caused it.
+//
+// The standard library panics on the equivalent mistake (http.ServeMux.Handle
+// on a nil handler), and doing so here would surface it faster. This repo's
+// conventions say not to panic in library code, and the alternative is
+// defensible on its own terms: the service starts, readiness goes red, no
+// traffic is routed to it, and the log says exactly which check was never
+// supplied. A misconfigured instance that refuses traffic beats one that
+// crash-loops.
 func (c *Checker) Register(name string, check CheckFunc) {
+	if check == nil {
+		c.logger.Error("readiness check registered as nil; it will always fail", "check", name)
+		check = func(context.Context) error {
+			return errors.New("no check function was registered")
+		}
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.checks[name] = check
@@ -114,29 +137,67 @@ func (c *Checker) Ready() http.Handler {
 	})
 }
 
-// run executes every check concurrently and returns each one's result.
+// outcome is one check's result, carried back from its goroutine.
+type outcome struct {
+	name string
+	err  error
+}
+
+// run executes every check concurrently and returns each one's result, bounded
+// by ctx.
+//
+// It deliberately does not wait for every goroutine to finish. Waiting makes
+// the deadline advisory: a check that ignores its context — a driver with its
+// own timeout, a library that forgot one — holds the probe open for as long as
+// it likes and then reports success, so /readyz answers 200 long after it
+// should have answered at all. An orchestrator polling every two seconds does
+// not care what the answer would eventually have been.
+//
+// So anything still running when ctx expires is reported as failed and left to
+// finish on its own. Its goroutine is not leaked in the blocking sense: the
+// results channel is buffered for every check, so a late send never blocks and
+// the goroutine exits whenever its check returns.
 func (c *Checker) run(ctx context.Context, checks map[string]CheckFunc) map[string]error {
-	var (
-		wg      sync.WaitGroup
-		mu      sync.Mutex
-		results = make(map[string]error, len(checks))
-	)
+	results := make(chan outcome, len(checks))
 
 	for name, check := range checks {
-		wg.Go(func() {
-			err := check(ctx)
-			if err != nil {
-				// The one place the reason is recorded, since the response
-				// deliberately omits it.
-				c.logger.WarnContext(ctx, "readiness check failed", "check", name, "error", err)
-			}
+		go func() {
+			// A panicking check would otherwise take the process down: this
+			// goroutine is outside the request's, so no HTTP middleware can
+			// recover it. A dependency that panics on a bad connection should
+			// make readiness go red, not end the service.
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					results <- outcome{name, fmt.Errorf("check panicked: %v", recovered)}
+				}
+			}()
 
-			mu.Lock()
-			defer mu.Unlock()
-			results[name] = err
-		})
+			results <- outcome{name, check(ctx)}
+		}()
 	}
 
-	wg.Wait()
-	return results
+	collected := make(map[string]error, len(checks))
+	for range checks {
+		select {
+		case got := <-results:
+			if got.err != nil {
+				// The one place the reason is recorded, since the response
+				// deliberately omits it.
+				c.logger.WarnContext(ctx, "readiness check failed", "check", got.name, "error", got.err)
+			}
+			collected[got.name] = got.err
+
+		case <-ctx.Done():
+			for name := range checks {
+				if _, done := collected[name]; !done {
+					err := fmt.Errorf("check did not finish within the readiness timeout: %w", ctx.Err())
+					c.logger.WarnContext(ctx, "readiness check timed out", "check", name, "error", err)
+					collected[name] = err
+				}
+			}
+			return collected
+		}
+	}
+
+	return collected
 }

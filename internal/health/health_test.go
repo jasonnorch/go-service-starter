@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -187,5 +188,105 @@ func TestRegisterReplacesAnExistingCheck(t *testing.T) {
 	}
 	if len(got.Checks) != 1 {
 		t.Errorf("checks = %v, want one entry", got.Checks)
+	}
+}
+
+// A nil check would be called as a nil function during a probe — and that panic
+// happens in a goroutine of its own, where no HTTP middleware can recover it.
+// The process dies at probe time, remote from the wiring mistake that caused it.
+func TestRegisterHandlesANilCheck(t *testing.T) {
+	var logged bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	checker := health.New(logger, time.Second)
+	checker.Register("database", nil)
+
+	// Reported at registration, not at the first probe. The distinction is the
+	// point: the mistake is in the wiring, and saying so at startup is what
+	// stops it being diagnosed later from a probe failure.
+	//
+	// Asserted on the specific message rather than on the word "nil", because
+	// run's panic recovery also mentions nil — the two are independent
+	// protections and a test that cannot tell them apart passes when either is
+	// removed.
+	if !strings.Contains(logged.String(), "registered as nil") {
+		t.Errorf("registration did not report the nil check: %s", logged.String())
+	}
+
+	status, got := probe(t, checker.Ready())
+
+	if status != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503 — a check that was never supplied cannot pass", status)
+	}
+	if got.Checks["database"] != "failed" {
+		t.Errorf("database = %q, want failed", got.Checks["database"])
+	}
+}
+
+// The timeout has to bound the probe, not merely be offered to the checks.
+//
+// The existing slow-check test uses a check that honors ctx, so it proves the
+// cooperative path only. A driver with its own timeout, or a library that forgot
+// one, holds the probe open for as long as it likes — and then reports success,
+// so /readyz answers 200 long after it should have answered at all.
+func TestReadyDoesNotWaitForACheckThatIgnoresTheContext(t *testing.T) {
+	const timeout = 50 * time.Millisecond
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+
+	checker := health.New(discard(), timeout)
+	checker.Register("cooperative", func(context.Context) error { return nil })
+	checker.Register("stubborn", func(context.Context) error {
+		<-release // never returns during the test, and never looks at ctx
+		return nil
+	})
+
+	start := time.Now()
+	status, got := probe(t, checker.Ready())
+	elapsed := time.Since(start)
+
+	if elapsed > time.Second {
+		t.Errorf("the probe took %s against a %s timeout; it waited for the stubborn check", elapsed, timeout)
+	}
+	if status != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503", status)
+	}
+	if got.Checks["stubborn"] != "failed" {
+		t.Errorf("stubborn = %q, want failed", got.Checks["stubborn"])
+	}
+	// The one that answered in time is still reported on its own merits.
+	if got.Checks["cooperative"] != "ok" {
+		t.Errorf("cooperative = %q, want ok", got.Checks["cooperative"])
+	}
+}
+
+// A check runs in a goroutine outside the request's, so a panic in one is
+// unrecoverable by any HTTP middleware and ends the process. A dependency that
+// panics on a bad connection should turn readiness red, not stop the service.
+func TestReadySurvivesAPanickingCheck(t *testing.T) {
+	var logged bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	checker := health.New(logger, time.Second)
+	checker.Register("healthy", func(context.Context) error { return nil })
+	checker.Register("panicky", func(context.Context) error { panic("driver exploded") })
+
+	status, got := probe(t, checker.Ready())
+
+	if status != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503", status)
+	}
+	if got.Checks["panicky"] != "failed" {
+		t.Errorf("panicky = %q, want failed", got.Checks["panicky"])
+	}
+	if got.Checks["healthy"] != "ok" {
+		t.Errorf("healthy = %q, want ok — one bad check must not condemn the others", got.Checks["healthy"])
+	}
+	if !strings.Contains(logged.String(), "driver exploded") {
+		t.Errorf("the panic value was not logged: %s", logged.String())
+	}
+	// And it is not published, like every other failure reason.
+	if strings.Contains(fmt.Sprint(got.Checks), "driver exploded") {
+		t.Error("the panic value reached the response")
 	}
 }
