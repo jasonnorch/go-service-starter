@@ -45,11 +45,43 @@ func (r *recorder) Write(b []byte) (int, error) {
 }
 
 // Unwrap exposes the underlying writer to http.ResponseController, which is how
-// a handler reaches Flush, Hijack, or the per-request deadlines through a
-// wrapper. Without it, wrapping a ResponseWriter silently disables streaming
-// and WebSocket upgrades — the classic cost of middleware that wraps the
-// writer, and the reason ResponseController exists.
+// a handler reaches Hijack or the per-request deadlines through a wrapper.
+// Without it, wrapping a ResponseWriter silently disables WebSocket upgrades —
+// the classic cost of middleware that wraps the writer, and the reason
+// ResponseController exists.
 func (r *recorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
+
+// FlushError sends what has been written so far, and records that it happened.
+//
+// Unwrap alone is not enough for flushing. ResponseController would find no
+// flush method here, unwrap, and flush the writer underneath — committing the
+// response and its status without this recorder ever knowing. Everything
+// downstream then believes nothing has been sent: the access log reports a
+// status the client may not have received, and Recover, seeing an unstarted
+// response, appends an error envelope onto a body already in flight.
+//
+// So the flush is intercepted rather than delegated blindly. A flush before any
+// write commits 200, which is precisely what net/http does.
+func (r *recorder) FlushError() error {
+	if !r.wrote {
+		r.status = http.StatusOK
+		r.wrote = true
+	}
+	return http.NewResponseController(r.ResponseWriter).Flush()
+}
+
+// Flush implements http.Flusher.
+//
+// ResponseController prefers FlushError above, so this exists for the older
+// idiom that is still the common one:
+//
+//	if f, ok := w.(http.Flusher); ok {
+//	    f.Flush()
+//	}
+//
+// Without it that assertion fails against this wrapper and the branch is
+// skipped — the handler streams nothing, reports no error, and looks correct.
+func (r *recorder) Flush() { _ = r.FlushError() }
 
 // Status returns the status sent to the client.
 func (r *recorder) Status() int { return r.status }

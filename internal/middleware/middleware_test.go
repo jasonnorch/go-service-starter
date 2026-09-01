@@ -401,3 +401,107 @@ func TestRequestLoggerKeepsTheResponseControllerWorking(t *testing.T) {
 		t.Errorf("Flush through the wrapper failed: %v — streaming responses are broken", flushErr)
 	}
 }
+
+// Recover has to work on its own. The package's whole claim is that these
+// compose with anything, and the one thing this middleware must know — has the
+// response already begun? — cannot depend on somebody else having wrapped the
+// writer first.
+//
+// Before this, standalone Recover produced:
+//
+//	{"partial":true{"error":{"code":"internal_error",...}}
+//
+// an error envelope glued onto a half-written body, from the middleware whose
+// entire job is to prevent exactly that.
+func TestRecoverStandaloneDoesNotAppendToAStartedResponse(t *testing.T) {
+	logger, logged := capture()
+	partial := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"partial":true`))
+		panic("boom")
+	})
+
+	rec := serve(middleware.Recover(logger)(partial), get("/partial"))
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want the 200 that was already sent", rec.Code)
+	}
+	if rec.Body.String() != `{"partial":true` {
+		t.Errorf("the response was modified after it had begun: %s", rec.Body.String())
+	}
+	if !strings.Contains(logged.String(), "boom") {
+		t.Errorf("the panic was not logged: %s", logged.String())
+	}
+}
+
+// A flush commits the response and its status. If the recorder does not notice,
+// everything downstream believes nothing has been sent — so a later panic
+// appends an error body to a response already in flight.
+func TestRecorderTreatsAFlushAsTheResponseStarting(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		wrap func(http.Handler) http.Handler
+	}{
+		{"through the request logger", middleware.RequestLogger(discard())},
+		{"standalone recover", func(h http.Handler) http.Handler { return h }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			flushThenPanic := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if err := http.NewResponseController(w).Flush(); err != nil {
+					t.Errorf("flush failed: %v", err)
+				}
+				panic("boom")
+			})
+
+			rec := serve(tc.wrap(middleware.Recover(discard())(flushThenPanic)), get("/stream"))
+
+			if strings.Contains(rec.Body.String(), "internal_error") {
+				t.Errorf("an error envelope was appended after a flush: %s", rec.Body.String())
+			}
+		})
+	}
+}
+
+// The older idiom, still the common one. Without a Flush method on the wrapper
+// this assertion fails, the branch is skipped, and the handler streams
+// nothing — reporting no error and looking correct.
+func TestRequestLoggerKeepsTheFlusherAssertionWorking(t *testing.T) {
+	var asserted, flushed bool
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("chunk"))
+		f, ok := w.(http.Flusher)
+		asserted = ok
+		if ok {
+			f.Flush()
+			flushed = true
+		}
+	})
+
+	serve(middleware.RequestLogger(discard())(handler), get("/stream"))
+
+	if !asserted {
+		t.Error("w.(http.Flusher) failed through the wrapper; streaming handlers silently do nothing")
+	}
+	if !flushed {
+		t.Error("the flush branch never ran")
+	}
+}
+
+// The status a flush commits has to be the one the access log reports, or the
+// log disagrees with what the client received.
+func TestRequestLoggerLogsTheStatusCommittedByAFlush(t *testing.T) {
+	logger, logged := capture()
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = http.NewResponseController(w).Flush()
+	})
+
+	serve(middleware.RequestLogger(logger)(handler), get("/stream"))
+
+	var line map[string]any
+	if err := json.Unmarshal(logged.Bytes(), &line); err != nil {
+		t.Fatalf("log line is not JSON: %s", logged.String())
+	}
+	if line["status"] != float64(http.StatusOK) {
+		t.Errorf("status = %v, want 200 — a flush commits the response", line["status"])
+	}
+}

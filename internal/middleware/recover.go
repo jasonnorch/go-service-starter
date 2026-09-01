@@ -23,6 +23,26 @@ import (
 func Recover(logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Whether the response has already begun is the one thing this
+			// middleware must know, so it cannot depend on somebody else having
+			// wrapped the writer first. With RequestLogger installed outside,
+			// its recorder is reused; used on its own — which the package
+			// invites, since everything here composes — Recover wraps the
+			// writer itself.
+			//
+			// Without this, a handler that writes part of a body and then
+			// panics gets an error envelope glued onto it:
+			//
+			//	{"partial":true{"error":{"code":"internal_error",...}}
+			//
+			// which no client can parse, from the middleware whose entire job
+			// is to keep a panic from producing exactly that.
+			observer, ok := w.(responseObserver)
+			if !ok {
+				recorder := newRecorder(w)
+				observer, w = recorder, recorder
+			}
+
 			defer func() {
 				recovered := recover()
 				if recovered == nil {
@@ -51,7 +71,7 @@ func Recover(logger *slog.Logger) func(http.Handler) http.Handler {
 				// the body is partly written; appending an error envelope to it
 				// produces something the client cannot parse. Logging is all
 				// that is left.
-				if observer, ok := w.(responseObserver); ok && observer.Written() {
+				if observer.Written() {
 					return
 				}
 
