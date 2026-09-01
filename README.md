@@ -4,7 +4,7 @@ A Go HTTP service starter built on the standard library. Opinionated about the
 things that are tedious to get right — configuration, shutdown, error responses,
 observability — and deliberately swappable in the places where opinions differ.
 
-```
+```sh
 git clone https://github.com/jasonnorch/go-service-starter yourthing
 cd yourthing
 make rename MODULE=github.com/you/yourthing
@@ -116,7 +116,7 @@ complete audit of every use.
 
 ## Layout
 
-```
+```text
 cmd/api/                 entry point; os.Exit(run()) so deferred cleanup runs
 internal/app/            wiring, the route table, the middleware stack
 internal/config/         typed config, embedded defaults, Secret, validation
