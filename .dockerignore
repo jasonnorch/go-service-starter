@@ -1,0 +1,10 @@
+# Everything here would either invalidate the build cache for no reason or end
+# up inside the image. .git in particular is often the largest thing in the
+# build context.
+.git
+.github
+bin
+config.yaml
+.env
+*.md
+docs
