@@ -1,0 +1,16 @@
+# Build output
+/bin/
+
+# Local configuration. The service runs correctly without this file; it exists
+# only to override the embedded defaults on a developer machine, so it is
+# per-machine state rather than something the repo should carry.
+/config.yaml
+.env
+
+# Test and coverage artifacts
+*.out
+*.test
+
+# Editor and OS noise
+.DS_Store
+*.swp
