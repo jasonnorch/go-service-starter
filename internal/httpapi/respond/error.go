@@ -72,6 +72,13 @@ func NotFound(message string) *Error {
 	return New(http.StatusNotFound, "not_found", message)
 }
 
+// MethodNotAllowed must be sent with an Allow header naming the methods that
+// would have worked; RFC 9110 requires it, and without it the response says
+// only that the client is wrong.
+func MethodNotAllowed(message string) *Error {
+	return New(http.StatusMethodNotAllowed, "method_not_allowed", message)
+}
+
 func Conflict(message string) *Error {
 	return New(http.StatusConflict, "conflict", message)
 }

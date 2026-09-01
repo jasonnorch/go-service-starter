@@ -27,9 +27,25 @@ import (
 //
 // Install it outside Recover, so a panic that becomes a 500 is logged as a 500
 // rather than as nothing at all.
-func RequestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
+//
+// quiet names paths to skip — health probes, in practice. An orchestrator polls
+// those every couple of seconds per instance, which is tens of thousands of
+// lines a day that say nothing, and enough volume to bury the requests that do.
+// It is an exact path match rather than a prefix, so a route is never silenced
+// by accident.
+func RequestLogger(logger *slog.Logger, quiet ...string) func(http.Handler) http.Handler {
+	silent := make(map[string]struct{}, len(quiet))
+	for _, path := range quiet {
+		silent[path] = struct{}{}
+	}
+
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if _, skip := silent[r.URL.Path]; skip {
+				next.ServeHTTP(w, r)
+				return
+			}
+
 			start := time.Now()
 			rec := newRecorder(w)
 

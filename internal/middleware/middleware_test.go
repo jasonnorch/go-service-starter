@@ -386,6 +386,26 @@ func TestRequestLoggerDefaultsToTheStatusNetHTTPSends(t *testing.T) {
 	}
 }
 
+// An orchestrator polling a probe every couple of seconds is tens of thousands
+// of lines a day that say nothing, and enough volume to bury the requests that
+// do.
+func TestRequestLoggerSkipsQuietPaths(t *testing.T) {
+	logger, logged := capture()
+	h := middleware.RequestLogger(logger, "/healthz", "/readyz")(ok)
+
+	serve(h, get("/healthz"))
+	serve(h, get("/readyz"))
+	if logged.Len() != 0 {
+		t.Errorf("a quiet path was logged: %s", logged.String())
+	}
+
+	// Exact match, not prefix: a route must never be silenced by accident.
+	serve(h, get("/healthz/details"))
+	if logged.Len() == 0 {
+		t.Error("a path merely prefixed by a quiet one was silenced")
+	}
+}
+
 // Wrapping a ResponseWriter silently disables streaming unless the wrapper
 // exposes the original — the classic cost of access-log middleware.
 func TestRequestLoggerKeepsTheResponseControllerWorking(t *testing.T) {
