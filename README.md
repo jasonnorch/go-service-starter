@@ -7,9 +7,16 @@ observability — and deliberately swappable in the places where opinions differ
 ```sh
 git clone https://github.com/jasonnorch/go-service-starter yourthing
 cd yourthing
-make rename MODULE=github.com/you/yourthing
+./setup.sh github.com/you/yourthing
 make verify && make run
 ```
+
+`./setup.sh` is the one step that is not `make`, and you run it once. It
+rewrites the module path through every import, sets the service name that shows
+up in your logs and in `/info`, and then runs `go build ./...` so it cannot
+report success on a tree that no longer compiles. It never prompts and deletes
+nothing — your git history and remotes are left alone — and running it a second
+time is a no-op, so a typo costs you a re-run and nothing else.
 
 `make verify` passes on a fresh clone with no config file, no environment
 variables, and nothing else running. Once the module cache is warm the tests
@@ -117,6 +124,7 @@ complete audit of every use.
 ## Layout
 
 ```text
+setup.sh                 rename the template to your module; run once, first
 cmd/api/                 entry point; os.Exit(run()) so deferred cleanup runs
 internal/app/            wiring, the route table, the middleware stack
 internal/config/         typed config, embedded defaults, Secret, validation
@@ -149,8 +157,10 @@ blips, turning a recovered dependency into a cold start of the whole fleet.
 | `make run` | Build and run. |
 | `make test` | Tests with the race detector. |
 | `make lint` | golangci-lint over the whole tree. |
-| `make rename MODULE=...` | Rewrite the module path everywhere. |
 | `make deps` | Upgrade dependencies and tidy. |
+
+Renaming the template is `./setup.sh`, not a make target — see the quickstart
+above, and `./setup.sh --help`.
 
 ## Swapping the opinionated parts
 

@@ -96,6 +96,61 @@ specification.
 
 ---
 
+## setup.sh instead of make rename
+
+**The decision.** Renaming a fork is `./setup.sh github.com/you/yourthing`, a
+shell script at the repo root, rather than a `make rename` target. It rewrites
+the module path and the five places the bare service name is baked in, then
+runs `go build ./...`. It never prompts, deletes nothing, and is a no-op when
+the module already matches.
+
+**Why a root script.** The reader is a stranger, and a stranger's first move is
+`ls`. `setup.sh` is visible there; `make rename` is only discoverable by
+opening the Makefile or reading far enough into the README. The split is also
+honest about lifetime: `setup.sh` runs exactly once in a repo's life, and
+`make` is what gets run every day afterwards. There is no Go-ecosystem
+convention to defer to here — `gonew` exists but is experimental and largely
+unadopted, and the generator model that Python, Rust, and .NET settled on
+(cookiecutter, `cargo-generate`, `dotnet new`) needs a tool installed before
+the template is usable at all. A clone plus one script needs nothing.
+
+**Why it does the name and not just the module path.** `make rename` built its
+file list by grepping for the *module path*, so `Makefile`, `defaults.yaml`,
+and the CI workflow — which contain only the bare name — were never opened. A
+fork renamed that way still logged `service=go-service-starter` on every line
+and reported it from `/info`. The rename looked complete and was not.
+
+**Why the name substitutions are anchored.** Because a second tree-wide pass on
+the bare name is not a smaller version of the first one, it is a different and
+much worse operation. For a fork at `github.com/you/api` the bare name is
+`api`, which is a substring of `httpapi`, of `cmd/api`, and of the word "API"
+in half the prose in this repo. So each name substitution names one line in one
+file — `^APP_NAME := `, the two-space `name:` key, `^# ` on the first line of
+each doc, `-t <name>:ci` — and each is an error, not a silent no-op, when it
+matches nothing. A substitution that quietly stops matching is the exact bug
+this script was written to fix.
+
+**Why it is checked in `make verify`.** Those anchors are pinned to the shape
+of lines in other files, which makes them exactly the kind of thing a tidy-up
+commit breaks without noticing. Nothing on `main` would fail: the damage would
+surface once, later, in a fork, to somebody with no idea what the script was
+supposed to match. `./setup.sh --check` runs the same patterns in a mode that
+writes nothing, so that failure happens here instead.
+
+**Why it does not reset git history.** Offering `rm -rf .git && git init`
+behind a prompt was considered and rejected. A prompt is a hang for anything
+non-interactive, and an agent that does answer it answers it blindly; the
+alternative — a flag — is a destructive default one typo away from deleting the
+history of the wrong repo. The saving is one `git init`. Because the script
+neither prompts nor destroys, nobody has to read it before running it, which is
+worth more than the step it would save.
+
+**To swap it.** It is one self-contained file with no dependency on the rest of
+the repo. A fork that would rather have `make rename` back can lift the two
+substitution passes straight out of it.
+
+---
+
 ## Load-bearing details that look removable
 
 ### The embedded defaults must list every key
