@@ -1,8 +1,10 @@
+# Rewritten by ./setup.sh, which anchors on this line's exact shape. Keep it a
+# plain literal assignment on one line.
 APP_NAME := go-service-starter
 BUILD_DIR := bin
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
-.PHONY: all build clean deps lint verify test run rename
+.PHONY: all build clean deps lint verify test run
 
 all: verify build
 
@@ -51,8 +53,13 @@ lint:
 #
 # Lints the whole tree rather than only new findings: this repo starts with no
 # backlog, and the point of a starter is that it is clean from the first commit.
+#
+# It also runs `./setup.sh --check`, so a reformatted line that the rename
+# anchors on fails here rather than silently, once, in somebody's fork.
 verify:
 	@failed=0; \
+	printf '\033[2m→ setup.sh --check\033[0m\n'; \
+	./setup.sh --check || failed=1; \
 	printf '\033[2m→ gofmt\033[0m\n'; \
 	unformatted="$$(gofmt -l . || true)"; \
 	if [ -n "$$unformatted" ]; then \
@@ -73,22 +80,3 @@ verify:
 		printf "\033[31m✗ verify failed\033[0m\n"; \
 		exit 1; \
 	fi
-
-# Rewrites the module path in go.mod and every import that references it. This
-# is the first thing you run after forking, so it ships in the first commit.
-#
-# The old path is read from `go list -m` rather than hardcoded, which makes the
-# target idempotent and lets it run a second time to correct a typo.
-#
-# perl rather than sed: `sed -i` needs an empty argument for the backup suffix
-# on BSD/macOS and must not have one on GNU, and there is no spelling that works
-# on both. \Q...\E quotes the old path so its dots stay literal.
-rename:
-	@test -n "$(MODULE)" || (echo "usage: make rename MODULE=github.com/you/yourthing" && exit 1)
-	@old="$$(go list -m)"; \
-	if [ "$$old" = "$(MODULE)" ]; then echo "already $(MODULE)"; exit 0; fi; \
-	files="$$(grep -rl --binary-files=without-match --exclude-dir=.git --exclude-dir=$(BUILD_DIR) -F "$$old" . || true)"; \
-	if [ -z "$$files" ]; then echo "no references to $$old found"; exit 1; fi; \
-	printf '%s\n' "$$files" | xargs perl -pi -e "s{\Q$$old\E}{$(MODULE)}g"; \
-	printf '\033[32m✓ renamed %s → %s\033[0m\n' "$$old" "$(MODULE)"; \
-	printf '  rewritten:\n%s\n' "$$files"

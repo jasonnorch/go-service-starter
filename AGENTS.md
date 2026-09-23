@@ -15,6 +15,7 @@ forks is worse than no default at all, because it is inherited silently.
 ## Where things are
 
 ```text
+setup.sh                   renames the template to a fork's module; run once
 cmd/api/main.go            entry point; os.Exit(run()) so deferred cleanup runs
 internal/app/app.go        wiring, the route table, the middleware stack
 internal/config/           typed Config, embedded defaults.yaml, Secret, Validate
@@ -37,9 +38,45 @@ config.example.yaml        symlink to internal/config/defaults.yaml — never a 
   work as done, and report the real output.
 - `make run` — build and run; `make test` — tests with the race detector
 - `make lint` — golangci-lint alone
-- `make rename MODULE=github.com/you/yourthing` — rewrite the module path
-  everywhere. The first thing a fork runs.
+- `./setup.sh github.com/you/yourthing` — rename the template to a fork's own
+  module. The first thing a fork runs; see below. `./setup.sh --check` verifies
+  its substitutions still match and is part of `make verify`.
 - `make deps` — `go get -u ./...` and tidy, only when asked to upgrade
+
+## Forking this template
+
+`./setup.sh github.com/you/yourthing` runs **before** `make verify`, not after.
+Verifying first only proves the starter compiles, which it already did. The
+script rewrites the module path through every import, plus the five places the
+bare service name is baked in — `Makefile`, `internal/config/defaults.yaml`,
+the `README.md` and `AGENTS.md` titles, and the CI image tag — then runs
+`go build ./...` so it cannot report success on a tree that no longer builds.
+
+Four properties it guarantees, so there is no need to hedge around it:
+
+- **It never prompts.** There is no interactive path, so it cannot hang an
+  unattended run waiting on a TTY that isn't there.
+- **It is idempotent.** Run against a module that already matches, it prints
+  `already <module>` and exits 0. When it is unclear whether a repo has been
+  set up, running it is the cheapest way to find out.
+- **It checks before it writes.** Every substitution is matched, Go is
+  confirmed installed, and the tracked tree must have no uncommitted changes
+  before any file is touched, so those failures leave the tree as it was. Once writing starts, every write is rechecked and the result
+  is built; a failure there keeps the rename and the error says so, and
+  `git restore .` undoes it, because only tracked files are ever written.
+  Either way, read the error and stop rather than working around it.
+- **It deletes nothing.** No history reset, no self-deletion, no touching the
+  git remote. Repointing `origin` is left to the person doing the fork, and the
+  script only reminds them.
+
+**Never rename by hand, and never `sed` the bare service name across the
+tree.** The name is a substring of real identifiers here. Fork this to
+`github.com/you/api` and a tree-wide swap of `api` rewrites every
+`internal/httpapi` import to `internal/httpnewname` while the directory keeps
+its old name, and quietly edits the word wherever it appears in comments and
+log messages. That is the failure `setup.sh` exists to prevent: each of its
+name substitutions is anchored to one line in one file, and each one is an
+error rather than a silent no-op when it matches nothing.
 
 ## Conventions
 

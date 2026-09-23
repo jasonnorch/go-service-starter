@@ -17,8 +17,8 @@
 # cannot be set by an environment variable.
 
 service:
-  # Identifies the service in logs and in the /info response. Change this first
-  # after forking.
+  # Identifies the service in logs and in the /info response. Set by ./setup.sh,
+  # which anchors on this line's exact indentation and shape.
   name: go-service-starter
 
   # "development" or "production". Only affects defaults that would be unsafe or
