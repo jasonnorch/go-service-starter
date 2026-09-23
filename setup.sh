@@ -42,10 +42,11 @@ Behavior worth relying on:
 writes nothing. `make verify` runs it, so a reformatted Makefile or a
 re-indented defaults.yaml fails here rather than in someone's fork.
 
-Exit codes: 0 on success, including "already set up". 1 on any failure, with
-the tree left as it was, except one: if `go build` fails after the rename, the
-rename is kept so the compile error can be read against it. `git restore .`
-undoes it, since only tracked files were written.
+Exit codes: 0 on success, including "already set up". 1 on any failure. A
+failure before the first write leaves the tree as it was. A failure after it —
+a write that did not land, or `go build` rejecting the result — leaves the
+rename in place so the error can be read against it, and says so; `git restore
+.` undoes it, since only tracked files are written.
 USAGE
 }
 
@@ -165,10 +166,15 @@ anchor() {
 		if [ ! -f "$_file" ]; then
 			FAILED="$FAILED\n  $_file — file not found"
 		elif ! perl -0777 -ne "exit(/$_pattern/m ? 0 : 1)" "$_file"; then
-			FAILED="$FAILED\n  $_file — nothing matched /$_pattern/"
+			# The name, not the pattern: FAILED is printed with %b, which would
+			# eat the pattern's backslashes, and $ENV{...} tells a reader nothing.
+			FAILED="$FAILED\n  $_file — its anchored line does not carry \"$OLD_NAME\""
 		fi
 	else
-		perl -pi -e "s/$_pattern/$_replacement/" "$_file"
+		# Collected rather than fatal, so a failed write reaches the recheck
+		# below and its undo hint instead of exiting with the tree half-renamed.
+		perl -pi -e "s/$_pattern/$_replacement/" "$_file" ||
+			FAILED="$FAILED\n  $_file — write failed"
 	fi
 }
 
@@ -216,16 +222,36 @@ command -v go >/dev/null 2>&1 || die "Go is not installed — install it and run
 git grep -qF "$OLD_MODULE" || die "no references to $OLD_MODULE found — is this a clone of the template?"
 REWRITTEN=$(git grep -lF "$OLD_MODULE" | wc -l | tr -d ' ')
 
+UNDO="the rename is left in place; \`git restore .\` undoes it"
+
 # shellcheck disable=SC2016
-git grep -lzF "$OLD_MODULE" | xargs -0 perl -pi -e 's{\Q$ENV{OLD_MODULE}\E}{$ENV{NEW_MODULE}}g'
+git grep -lzF "$OLD_MODULE" | xargs -0 perl -pi -e 's{\Q$ENV{OLD_MODULE}\E}{$ENV{NEW_MODULE}}g' ||
+	die "rewriting the module path failed — $UNDO"
 
 MODE=apply
 anchors
 
+# Recheck that every write landed. perl -pi only warns when it cannot write a
+# file and still exits 0, so a read-only README would otherwise be skipped, the
+# build would pass, and the script would report a rename that is not complete.
+# Running the check pass with the new name as the old one asserts each anchor
+# now carries it; go.mod stands in for the module rewrite, and go build checks
+# the imports.
+OLD_NAME=$NEW_NAME
+MODE=check
+anchors
+[ "$(awk '$1 == "module" { print $2; exit }' go.mod)" = "$NEW_MODULE" ] ||
+	FAILED="$FAILED\n  go.mod — module line was not rewritten"
+[ -z "$FAILED" ] || {
+	printf '%b%s%b' "$RED" "setup.sh: these writes did not land:" "$OFF" >&2
+	printf '%b\n' "$FAILED" >&2
+	die "$UNDO"
+}
+
 # A failed build is deliberately not rolled back. The compile error points at
 # files in the renamed tree, which is where it has to be read, and every write
 # above went to a tracked file, so git already is the undo.
-go build ./... || die "renamed, but the tree does not compile — see the error above. The rename is left in place; \`git restore .\` undoes it"
+go build ./... || die "renamed, but the tree does not compile — see the error above; $UNDO"
 
 printf '%b\n' "${GREEN}✓ $OLD_MODULE → $NEW_MODULE$OFF"
 printf '%b\n' "${DIM}  service name: $NEW_NAME$OFF"

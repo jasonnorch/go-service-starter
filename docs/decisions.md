@@ -137,12 +137,14 @@ surface once, later, in a fork, to somebody with no idea what the script was
 supposed to match. `./setup.sh --check` runs the same patterns in a mode that
 writes nothing, so that failure happens here instead.
 
-**Why a failed build is not rolled back.** Everything that can be checked
-before writing is — every anchor, and that Go is installed — so a failure there
-leaves the tree untouched. The `go build` at the end is different: it is the
-proof, and it can only run on the renamed tree. When it fails, the compile
-error names files in that tree, which is where someone has to read it, so the
-rename is kept and the message says how to undo it. The undo is git: the script
+**Why a failure after the first write is not rolled back.** Everything that
+can be checked before writing is — every anchor, and that Go is installed — so
+a failure there leaves the tree untouched. What follows can only be checked on
+the renamed tree: a recheck that every write landed (`perl -pi` only warns when
+it cannot write a file, and exits 0), then `go build` as the proof. When either
+fails, the error names files in that tree, which is where someone has to read
+it, so the rename is kept and the message says how to undo it. The undo is git:
+the script
 only rewrites tracked files (`git grep`, not `grep -r`, which is also what keeps
 an untracked note from being edited), so `git restore .` is complete. Staging
 the rename in a copy or backing up every file would put a small transaction
