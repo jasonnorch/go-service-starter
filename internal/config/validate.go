@@ -64,6 +64,24 @@ func (c *Config) Validate() error {
 	errs = append(errs, positiveDuration("postgres.connect_timeout", c.Postgres.ConnectTimeout))
 	// module:postgres end
 
+	// module:cache begin
+	// The backend names are spelled out rather than taken from the cache
+	// package, which imports this one.
+	switch c.Cache.Backend {
+	case "memory":
+	case "redis":
+		switch {
+		case !c.Cache.RedisURL.IsSet():
+			errs = append(errs, errors.New("cache.redis_url: must not be empty when cache.backend is redis"))
+		case c.Service.Production() && c.Cache.RedisURL.Reveal() == DevRedisURL:
+			errs = append(errs, errors.New("cache.redis_url: production is still using the development default; set CACHE_REDIS_URL"))
+		}
+	default:
+		errs = append(errs, fmt.Errorf("cache.backend: must be %q or %q, got %q", "redis", "memory", c.Cache.Backend))
+	}
+	errs = append(errs, positiveDuration("cache.connect_timeout", c.Cache.ConnectTimeout))
+	// module:cache end
+
 	// errors.Join drops nils, so the unconditional appends above cost nothing
 	// and it returns nil when every check passed.
 	return errors.Join(errs...)
