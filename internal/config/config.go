@@ -22,7 +22,7 @@ type Config struct {
 	Service  Service  `mapstructure:"service"  json:"service"`
 	Server   Server   `mapstructure:"server"   json:"server"`
 	Log      Log      `mapstructure:"log"      json:"log"`
-	Postgres Postgres `mapstructure:"postgres" json:"postgres"`
+	Postgres Postgres `mapstructure:"postgres" json:"postgres"` // module:postgres
 }
 
 // Service holds the service's identity.
@@ -66,6 +66,8 @@ const (
 	FormatJSON = "json"
 )
 
+// module:postgres begin
+
 // Postgres holds the database pool's parameters. Passed whole to postgres.Open.
 type Postgres struct {
 	// URL is a libpq connection string. It is a Secret because it carries the
@@ -82,3 +84,5 @@ type Postgres struct {
 // error rather than a service quietly dialing localhost. A test holds
 // defaults.yaml to this value, so the two cannot drift.
 const DevPostgresURL = "postgres://app:app@localhost:5432/app?sslmode=disable" //nolint:gosec // the local compose container's credentials, rejected in production by Validate
+
+// module:postgres end

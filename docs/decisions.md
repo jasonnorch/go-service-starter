@@ -102,9 +102,10 @@ registers keys by reading defaults; delete it if not.
 
 **The decision.** Renaming a fork is `./setup.sh github.com/you/yourthing`, a
 shell script at the repo root, rather than a `make rename` target. It rewrites
-the module path and the five places the bare service name is baked in, then
-runs `go build ./...`. It never prompts, deletes nothing, and is a no-op when
-the module already matches.
+the module path and the five places the bare service name is baked in, removes
+any modules named with `--without`, then runs `go build` and `go vet`. It never
+prompts, deletes only the modules it is told to, and is a no-op when the tree
+already matches.
 
 **Why a root script.** The reader is a stranger, and a stranger's first move is
 `ls`. `setup.sh` is visible there; `make rename` is only discoverable by
@@ -161,12 +162,66 @@ behind a prompt was considered and rejected. A prompt is a hang for anything
 non-interactive, and an agent that does answer it answers it blindly; the
 alternative — a flag — is a destructive default one typo away from deleting the
 history of the wrong repo. The saving is one `git init`. Because the script
-neither prompts nor destroys, nobody has to read it before running it, which is
-worth more than the step it would save.
+neither prompts nor destroys anything it was not asked to, nobody has to read it
+before running it, which is worth more than the step it would save.
 
 **To swap it.** It is one self-contained file with no dependency on the rest of
 the repo. A fork that would rather have `make rename` back can lift the two
 substitution passes straight out of it.
+
+---
+
+## Modules, and removing them with --without
+
+**The decision.** The dependency-backed features are chosen for the fork rather
+than left out. Each is a module: a package, plus the lines elsewhere that exist
+only for it, marked with a `module:<name>` comment. `./setup.sh --without
+<name>` removes one, at setup or any time after.
+
+**Why include them and let forks remove them, rather than the reverse.**
+Generating a module into a fork on request means its code is not in the
+template's tree, so it is not compiled or tested on `main`, and it rots where
+nobody is looking. Removal keeps every module in the tree where CI can see it.
+Deleting code is also mechanical in a way generating it is not: a removed
+module leaves nothing to configure, and it can happen whenever a fork decides,
+not only on day one.
+
+**Why markers, not a list of line numbers or patterns.** The marker sits on the
+line it governs, so moving, reformatting or editing that line carries the
+marker with it. There are two forms: a marker on a line removes that line, and
+a begin/end pair removes a block. A line that needs two modules names both,
+comma-separated, and goes when either does. That is how the Postgres-backed
+half of a feature disappears with Postgres as well as with the feature. The
+comment character is whatever the file uses (`//`, `#`, `<!-- -->`), so Go,
+YAML, the Makefile, CI and Markdown are all marked the same way. HTML comments
+are invisible when Markdown renders. Plain-text code blocks show the marker,
+which at least tells the reader the line is removable.
+
+**Why it is tested on every pull request.** A removal is only as good as its
+markers, and a missed one — an unmarked import, a test fixture still naming a
+deleted field — is invisible on `main`, where every module is present. It
+surfaces in a fork, to someone who did not write it. `make verify-without`
+removes each module in a scratch copy, then all of them together, and runs
+what the fork's own `make verify` would. `./setup.sh --check` catches the other
+half cheaply: a module whose files are present but which nothing marks, which
+means its wiring was added without markers and would be left dangling.
+
+**Why it deletes with rm, not git rm.** The undo for every setup.sh failure is
+`git restore .`, which restores from the index. `git rm` would stage the
+deletion, and the undo would silently fail to bring the files back. Only
+tracked files are deleted, and the script refuses outright if a module's
+directory holds untracked ones. Deleting those would be unrecoverable, and
+leaving them would orphan code that still imports the removed dependency.
+
+**What it costs.** Marker comments in files that would otherwise not need them,
+and a discipline: everything outside a module's package that mentions it has to
+be marked, or `verify-without` fails. The marker program is about eighty lines
+of perl inside `setup.sh`.
+
+**To swap it.** A fork that will never remove anything can ignore the markers.
+They are comments. Deleting the `--without` half of `setup.sh` and the
+`verify-without` target removes the machinery, and `./setup.sh --check` stops
+checking markers along with it.
 
 ---
 
@@ -203,6 +258,7 @@ fails its probes.
 
 ---
 
+<!-- module:postgres begin -->
 ## Postgres via pgx and goose
 
 **The decision.** The service has a Postgres pool, opened in `app.Run` from
@@ -270,9 +326,11 @@ Docker locally and a service container in CI.
 renaming the migration files. A different driver means rewriting `Open` and
 the code that takes the pool. A different database means `internal/postgres`,
 the block in `app.Run`, the `postgres` section of the config, and
-`compose.yaml`. Nothing else imports any of them.
+`compose.yaml`. Nothing else imports any of them. To drop Postgres entirely,
+`./setup.sh --without postgres`.
 
 ---
+<!-- module:postgres end -->
 
 ## Load-bearing details that look removable
 

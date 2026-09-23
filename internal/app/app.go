@@ -23,7 +23,7 @@ import (
 	"github.com/jasonnorch/go-service-starter/internal/httpapi/respond"
 	"github.com/jasonnorch/go-service-starter/internal/logging"
 	"github.com/jasonnorch/go-service-starter/internal/middleware"
-	"github.com/jasonnorch/go-service-starter/internal/postgres"
+	"github.com/jasonnorch/go-service-starter/internal/postgres" // module:postgres
 )
 
 // Run starts the service and blocks until it shuts down.
@@ -62,6 +62,10 @@ func Run(ctx context.Context, version string) error {
 	// any of them is.
 	checker := health.New(logger, cfg.Server.ReadTimeout)
 
+	// Each module is one marked block here; `./setup.sh --without <module>`
+	// deletes the block along with the package. See docs/decisions.md.
+
+	// module:postgres begin
 	pool, err := postgres.Open(ctx, cfg.Postgres, logger)
 	if err != nil {
 		return fmt.Errorf("opening postgres: %w", err)
@@ -70,6 +74,7 @@ func Run(ctx context.Context, version string) error {
 	// requests still in flight need the pool until Serve returns.
 	defer pool.Close()
 	checker.Register("postgres", pool.Ping)
+	// module:postgres end
 
 	server := httpapi.NewServer(newRouter(cfg, logger, version, checker), cfg.Server)
 

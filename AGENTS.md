@@ -25,11 +25,11 @@ internal/httpapi/respond/  the Error type and every response written
 internal/httpapi/decode/   JSON request bodies, with errors that say what to fix
 internal/middleware/       recover, request ID, security headers, body limit, log
 internal/health/           liveness and readiness with registered checks
-internal/postgres/         pgx pool, embedded goose migrations; the only pgx import
+internal/postgres/         pgx pool, embedded goose migrations   # module:postgres
 internal/requestid/        the correlation ID's context key
 docs/decisions.md          why each opinion is what it is, and how to swap it
 config.example.yaml        symlink to internal/config/defaults.yaml — never a copy
-compose.yaml               local Postgres for `make run` and integration tests
+compose.yaml               local Postgres for `make run`          # module:postgres
 ```
 
 ## Commands
@@ -38,16 +38,22 @@ compose.yaml               local Postgres for `make run` and integration tests
   -diff`, `go vet`, golangci-lint over the whole tree, `go test -race`.
   Non-destructive, runs everything before reporting. Run it before presenting
   work as done, and report the real output.
+<!-- module:postgres begin -->
 - `make up` / `make down` — start and stop the compose.yaml containers.
   `make run` needs them, since startup fails without a database.
 - `make test-integration` — the `integration`-tagged tests against those
   containers (runs `make up` first). `make verify` does not run them and needs
   no containers, but it does compile and vet them.
+<!-- module:postgres end -->
 - `make run` — build and run; `make test` — tests with the race detector
 - `make lint` — golangci-lint alone
-- `./setup.sh github.com/you/yourthing` — rename the template to a fork's own
-  module. The first thing a fork runs; see below. `./setup.sh --check` verifies
-  its substitutions still match and is part of `make verify`.
+- `./setup.sh github.com/you/yourthing [--without <module>,...]` — rename the
+  template to a fork's own module and drop modules it does not want. The first
+  thing a fork runs; see below. `./setup.sh --check` verifies its substitutions
+  and module markers and is part of `make verify`.
+- `make verify-without` — removes each module in a scratch copy and runs the
+  fork's checks on what is left. Run it after touching anything marked
+  `module:`, or adding a module. CI runs it on every PR.
 - `make deps` — `go get -u ./...` and tidy, only when asked to upgrade
 
 ## Forking this template
@@ -59,22 +65,30 @@ bare service name is baked in — `Makefile`, `internal/config/defaults.yaml`,
 the `README.md` and `AGENTS.md` titles, and the CI image tag — then runs
 `go build ./...` so it cannot report success on a tree that no longer builds.
 
+`--without <module>,...` removes modules: their package, and every line
+elsewhere marked `module:<name>` (see "Modules" below). It works at setup or
+any time after, on a tree that is already renamed.
+
 Four properties it guarantees, so there is no need to hedge around it:
 
 - **It never prompts.** There is no interactive path, so it cannot hang an
   unattended run waiting on a TTY that isn't there.
 - **It is idempotent.** Run against a module that already matches, it prints
-  `already <module>` and exits 0. When it is unclear whether a repo has been
-  set up, running it is the cheapest way to find out.
-- **It checks before it writes.** Every substitution is matched, Go is
-  confirmed installed, and the tracked tree must have no uncommitted changes
-  before any file is touched, so those failures leave the tree as it was. Once writing starts, every write is rechecked and the result
-  is built; a failure there keeps the rename and the error says so, and
-  `git restore .` undoes it, because only tracked files are ever written.
+  `already <module>`; naming a module already removed prints `already without
+  <name>`; both exit 0. When it is unclear whether a repo has been set up,
+  running it is the cheapest way to find out.
+- **It checks before it writes.** Every substitution and marker is matched, Go
+  is confirmed installed, and the tracked tree must have no uncommitted
+  changes before any file is touched, so those failures leave the tree as it
+  was. Once writing starts, every write is rechecked and the result is built
+  and vetted; a failure there keeps the changes and the error says so, and
+  `git restore .` undoes them, because only tracked files are ever written.
   Either way, read the error and stop rather than working around it.
-- **It deletes nothing.** No history reset, no self-deletion, no touching the
-  git remote. Repointing `origin` is left to the person doing the fork, and the
-  script only reminds them.
+- **It deletes only what `--without` names.** Only the tracked files of the
+  named modules, and it refuses if one of their directories holds untracked
+  files. No history reset, no self-deletion, no touching the git remote.
+  Repointing `origin` is left to the person doing the fork, and the script
+  only reminds them.
 
 **Never rename by hand, and never `sed` the bare service name across the
 tree.** The name is a substring of real identifiers here. Fork this to
@@ -169,17 +183,30 @@ accident.
 - Readiness responses report which check failed, never why. The reason goes to
   the log.
 - Adding a dependency is a decision, not a step. Each direct dependency is
-  confined to one package — Viper to `internal/config/load.go`, pgx and goose
-  to `internal/postgres` — and that confinement is what makes it swappable.
+  confined to one package, and that confinement is what makes it swappable.
   Say so in the PR, and name the package it is confined to.
 
-## Adding a dependency-backed feature
+## Modules
 
-`internal/postgres` is the pattern. A dependency lands as its own package plus
-one block in `app.Run`, which opens it, defers its close, and registers its own
-readiness check with `health.Checker`. Nothing in `internal/health` learns what
-a Postgres pool is.
+A module is a dependency-backed feature a fork can remove with
+`./setup.sh --without <name>`: a package, plus every line elsewhere that exists
+only for it, marked with a comment. A line containing `module:<name>` goes
+with the module; so does everything from `module:<name> begin` to
+`module:<name> end`. A marker naming several modules, comma-separated, goes
+when any of them does. The comment may be `//`, `#`, or `<!-- -->`.
 
+A module lands as its own package plus one block in `app.Run`, which opens it,
+defers its close, and registers its own readiness check with `health.Checker`.
+Nothing in `internal/health` learns what the dependency is.
+`internal/postgres` is the worked example. <!-- module:postgres -->
+
+- **Mark everything outside the package that mentions it.** Wiring, config
+  struct and defaults, `Validate`, test fixtures, Makefile targets, CI jobs,
+  README rows. `./setup.sh --check` fails if a module's files are present but
+  nothing is marked, and `make verify-without` fails if a missed line leaves
+  the fork broken. Run it before opening the PR.
+- **Register it in `setup.sh`**: a name in `KNOWN_MODULES` and its paths in
+  `module_paths`.
 - **Close with a defer in `app.Run`, not on `appCtx`.** `appCancel` fires
   before the server drains, so a pool closed there disappears under requests
   still in flight.
