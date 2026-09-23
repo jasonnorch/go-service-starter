@@ -73,8 +73,8 @@ nothing else. Call sites keep working, because they only ever see
 ## Viper, behind a typed struct
 
 **The decision.** Viper loads the configuration; a typed `Config` struct is what
-the rest of the program sees. `internal/config/load.go` is the only file that
-imports Viper.
+the rest of the program sees. `internal/config/load.go` is the only non-test
+file that imports Viper.
 
 **Why.** Layering embedded defaults, an optional file, and environment overrides
 is genuinely fiddly, and Viper does it. What it should not do is reach the rest
@@ -92,7 +92,9 @@ Replacing Viper with koanf, `envconfig`, or hand-rolled YAML plus `os.Getenv` is
 a rewrite of that one function; the `Config` struct, `Validate`, `Secret`, and
 every call site stay exactly as they are. The tests in `load_test.go` describe
 the behavior the replacement has to reproduce, so they double as its
-specification.
+specification — except `TestDefaultsListEveryKey`, which reads the file with
+Viper because the rule it enforces is Viper's. Keep it if the replacement also
+registers keys by reading defaults; delete it if not.
 
 ---
 
@@ -211,7 +213,10 @@ with Viper — and `AutomaticEnv` only reaches keys Viper already knows about wh
 `Unmarshal` runs. Remove a key from the file and the service still starts, still
 uses the zero value, and silently ignores the environment variable for it.
 
-`TestLoadEnvOverridesDefault` exists for this and nothing else.
+`TestDefaultsListEveryKey` guards the file itself: it walks `config.Config` and
+fails on any field missing from `defaults.yaml`, or any key in the file that
+matches no field. `TestLoadEnvOverridesDefault` guards the mechanism, failing if
+the defaults stop being read before `AutomaticEnv` runs.
 
 ### config.example.yaml is a symlink
 

@@ -148,8 +148,9 @@ accident.
   the example drift from the defaults.
 - **The embedded `defaults.yaml` must list every key**, even when the zero value
   would do. Reading it is what registers the key with Viper, and an unregistered
-  key cannot be set by an environment variable. There is a test for this;
-  removing a key from the file breaks env overrides silently.
+  key cannot be set by an environment variable. `TestDefaultsListEveryKey`
+  fails when a `Config` field is missing from the file; without it, the
+  env override for that key breaks silently.
 
 ## Safety boundaries
 
