@@ -384,6 +384,60 @@ caching entirely, `./setup.sh --without cache`.
 ---
 <!-- module:cache end -->
 
+<!-- module:auth begin -->
+## API keys, from config and the database
+
+**The decision.** Requests authenticate with `Authorization: Bearer <key>`.
+`auth.Require` hashes the key and looks the hash up in a `KeyStore`, then puts
+an `auth.Principal` on the context. Keys come from `auth.keys` in config, and
+also, when the postgres module is kept, from an `api_keys` table. `/v1/whoami`
+is the example protected route. `/livez`, `/readyz` and `/info` stay public.
+
+**Why API keys.** They are the simplest scheme that is correct for what a
+service like this usually serves: other services and scripts. There are no
+sessions, no token refresh, and no identity provider to run. JWT or OIDC is
+the right answer for end users, and that swap is designed in (see below).
+
+**Why only hashes are stored.** A key is 32 random bytes, so its SHA-256 is as
+good as a password hash without the cost of one: there is no dictionary to try
+and nothing to salt. A leaked config file or database dump reveals no usable
+key. `cmd/apikey` prints a key once, with the line to store, and the key
+cannot be recovered afterwards. Keys start with `sk_`, so one that leaks into
+a log or a commit is recognizable to a human and to secret scanners.
+
+**Why config and the database, and config first.** The database is where keys
+are issued and revoked at runtime. Config is where the first key comes from,
+since an empty table admits nobody, and where an operator's break-glass key
+lives if the database is down. `auth.Stores` tries config first. A store that
+errors fails the lookup rather than falling through: a database that cannot
+answer must not make a revoked key look merely unknown to the next store.
+`auth.keys` is one `name=sha256hex,...` string rather than a YAML list, so the
+whole set fits in a single `AUTH_KEYS` environment variable.
+
+**Why every bad key gets the same 401.** Missing, malformed, unknown and
+revoked keys produce an identical body and a `WWW-Authenticate` header. A
+caller probing keys learns nothing from which failure it got. A store failure
+is a 500, because telling a legitimate client its key is bad when the database
+is down sends them looking for the wrong problem.
+
+**How it fits the module system.** `pgstore`, its test and its migration are
+each marked `module:postgres,auth` from first line to last, so removing either
+module empties them, and emptied files are deleted. With postgres removed,
+`app.Run` is left with the config store alone. That is the "database if you
+have one, config if you don't" behavior, produced by deletion rather than by a
+runtime branch.
+
+**What it costs.** No new dependency. A `/v1` route group that forks will
+replace with their own routes.
+
+**To swap it.** Everything after `Require` reads only `auth.Principal`. JWT or
+OIDC is a new middleware that validates the token and sets the same
+`Principal`, mounted where `Require` is. No handler changes. To drop auth
+entirely, `./setup.sh --without auth`.
+
+---
+<!-- module:auth end -->
+
 ## Load-bearing details that look removable
 
 ### The embedded defaults must list every key

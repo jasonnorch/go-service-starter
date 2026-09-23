@@ -38,6 +38,7 @@ process.
 | **Health** | `/livez` and `/readyz`, with pluggable readiness checks. |
 | **Database** | Postgres through a pgx pool, goose migrations embedded and applied at startup under an advisory lock. <!-- module:postgres --> |
 | **Cache** | A three-method `Cache` interface, backed by Redis or an in-process map, both held to one contract test. <!-- module:cache --> |
+| **Auth** | API keys as bearer tokens, stored only as SHA-256: from config always, and from a revocable Postgres table when that module is kept. <!-- module:auth --> |
 | **Shutdown** | Signal, drain in-flight requests, force-close on a second signal. |
 | **Tooling** | `make verify`, golangci-lint, GitHub Actions, multi-stage Dockerfile. |
 
@@ -146,6 +147,8 @@ internal/middleware/     recover, request ID, security headers, body limit, log
 internal/health/         liveness and readiness with registered checks
 internal/postgres/       pgx pool, embedded goose migrations         # module:postgres
 internal/cache/          Cache interface; Redis and in-memory        # module:cache
+internal/auth/           API-key middleware and key stores           # module:auth
+cmd/apikey/              generate a key and print what to store      # module:auth
 internal/requestid/      the correlation ID's context key
 compose.yaml             local Postgres and Redis for `make run`     # module:postgres+cache
 ```
@@ -157,6 +160,7 @@ compose.yaml             local Postgres and Redis for `make run`     # module:po
 | GET | `/livez` | Liveness. Consults nothing — it answers "is this process working?" |
 | GET | `/readyz` | Readiness. Runs every registered check; 503 if any fails. |
 | GET | `/info` | Name, version, environment, uptime. |
+| GET | `/v1/whoami` | The caller's identity. Needs `Authorization: Bearer <key>`; the example protected route. <!-- module:auth --> |
 
 Liveness and readiness are kept apart deliberately. A liveness probe that
 consults the database restarts every instance of the service when the database
@@ -191,6 +195,7 @@ rather than aspirational. `docs/decisions.md` has the reasoning and the instruct
 | The error envelope | `internal/httpapi/respond/respond.go` |
 | The database driver or migration tool | `internal/postgres/` and its block in `app.Run` <!-- module:postgres --> |
 | The cache backend (Memcached, a managed service) | one new implementation of `cache.Cache` <!-- module:cache --> |
+| API keys for JWT or OIDC | a middleware that sets `auth.Principal`, in place of `auth.Require` <!-- module:auth --> |
 
 ## Modules
 
@@ -210,12 +215,9 @@ fork broken fails here first.
 
 - **postgres** — the pgx pool, migrations, and its compose service and integration tests <!-- module:postgres -->
 - **cache** — the `Cache` interface, Redis and in-memory backends, and Redis's compose service <!-- module:cache -->
+- **auth** — API-key middleware, `/v1/whoami`, `cmd/apikey`; its Postgres key table goes with either module <!-- module:auth -->
 
-## Not included yet
-
-- **Auth** — API keys, backed by Postgres when it is present and config when not
-
-It will land as a module.
+## Not included
 
 **Rate limiting is left out on purpose.** An in-process limiter counts per
 instance, so three instances allow three times the limit and nothing says so.

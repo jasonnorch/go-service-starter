@@ -24,6 +24,7 @@ type Config struct {
 	Log      Log      `mapstructure:"log"      json:"log"`
 	Postgres Postgres `mapstructure:"postgres" json:"postgres"` // module:postgres
 	Cache    Cache    `mapstructure:"cache"    json:"cache"`    // module:cache
+	Auth     Auth     `mapstructure:"auth"     json:"auth"`     // module:auth
 }
 
 // Service holds the service's identity.
@@ -106,3 +107,14 @@ type Cache struct {
 const DevRedisURL = "redis://localhost:6379/0"
 
 // module:cache end
+
+// module:auth begin
+
+// Auth holds API-key authentication's parameters. Passed to auth.NewConfigStore.
+type Auth struct {
+	// Keys is "name=sha256hex", comma-separated: the hashes of the keys
+	// allowed from configuration. Hashes, never keys, so this is not a Secret.
+	Keys string `mapstructure:"keys" json:"keys"`
+}
+
+// module:auth end
