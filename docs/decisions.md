@@ -189,13 +189,26 @@ not only on day one.
 **Why markers, not a list of line numbers or patterns.** The marker sits on the
 line it governs, so moving, reformatting or editing that line carries the
 marker with it. There are two forms: a marker on a line removes that line, and
-a begin/end pair removes a block. A line that needs two modules names both,
-comma-separated, and goes when either does. That is how the Postgres-backed
-half of a feature disappears with Postgres as well as with the feature. The
-comment character is whatever the file uses (`//`, `#`, `<!-- -->`), so Go,
-YAML, the Makefile, CI and Markdown are all marked the same way. HTML comments
-are invisible when Markdown renders. Plain-text code blocks show the marker,
-which at least tells the reader the line is removable.
+a begin/end pair removes a block. A marker can name several modules, joined in
+one of two ways:
+
+- **`a,b` goes when either module does.** That is how the Postgres-backed half
+  of auth disappears with Postgres as well as with auth.
+- **`a+b` goes only once every named module is gone,** counting modules
+  removed on earlier runs. It is for things the modules share: `compose.yaml`'s
+  header and `make up` must outlive either of Postgres and Redis, and go with
+  the last of them.
+
+A file that removal leaves empty is deleted, along with its directory if that
+empties too. That is how a file marked from its first line to its last, like
+`pgstore` or the `api_keys` migration, goes without appearing in any module's
+list of paths. The comment character is whatever the file uses (`//`, `#`,
+`<!-- -->`, SQL's `--`), so Go, YAML, the Makefile, CI, SQL and Markdown are
+all marked the same way. HTML comments are invisible when Markdown renders.
+Plain-text code blocks show the marker, which at least tells the reader the
+line is removable. In a Makefile, never put a line marker on a variable
+assignment: make keeps the space before a trailing comment as part of the
+value.
 
 **Why it is tested on every pull request.** A removal is only as good as its
 markers, and a missed one — an unmarked import, a test fixture still naming a
@@ -263,7 +276,8 @@ fails its probes.
 
 **The decision.** The service has a Postgres pool, opened in `app.Run` from
 `internal/postgres`, with schema migrations embedded in the binary and applied
-at startup by goose. pgx and goose are imported nowhere else.
+at startup by goose. goose is imported nowhere else. pgx is configured nowhere
+else, but code that queries takes the `*pgxpool.Pool` directly (see below).
 
 **Why include a database at all.** An earlier version left Postgres out on the
 grounds that "everyone's version differs". For a Go HTTP service that is mostly
@@ -325,8 +339,9 @@ Docker locally and a service container in CI.
 **To swap it.** A different migration tool means rewriting `Migrate` and
 renaming the migration files. A different driver means rewriting `Open` and
 the code that takes the pool. A different database means `internal/postgres`,
-the block in `app.Run`, the `postgres` section of the config, and
-`compose.yaml`. Nothing else imports any of them. To drop Postgres entirely,
+the block in `app.Run`, the `postgres` section of the config,
+`compose.yaml`, and every store that queries the pool (today,
+`internal/auth/pgstore`). To drop Postgres entirely,
 `./setup.sh --without postgres`.
 
 ---
@@ -483,8 +498,9 @@ channel discards exactly the signal that matters most.
 ### Tests isolate the environment, not just the filesystem
 
 `internal/config`'s tests move the working directory so a stray `config.yaml`
-cannot reach them, and clear every `SERVICE_*`, `SERVER_*`, `LOG_*` and
-`CONFIG_FILE` variable inherited from the shell or the CI image. The first
+cannot reach them, and clear `CONFIG_FILE` and every variable under a config
+section's prefix (`configEnvPrefixes` in `load_test.go`, one entry per
+top-level section) inherited from the shell or the CI image. The first
 version did only the former, and `SERVER_PORT=31337 go test ./internal/config/`
 failed on the developer's machine while passing everywhere else — the same
 "a test reads the machine it runs on" failure this package was written to avoid,

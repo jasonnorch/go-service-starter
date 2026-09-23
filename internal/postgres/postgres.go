@@ -1,11 +1,13 @@
 // Package postgres opens the service's connection pool and applies its schema
-// migrations. It is the only package that imports pgx or goose, so replacing
-// either — or Postgres itself — is a change here and in the one block in
-// app.Run that calls Open. See docs/decisions.md, "Postgres via pgx and goose".
+// migrations. It is the only package that imports goose, and the only one that
+// configures pgx: swapping the migration tool is a change here alone. See
+// docs/decisions.md, "Postgres via pgx and goose".
 //
-// There is deliberately no repository interface over the pool. Handlers and
-// stores take *pgxpool.Pool and write SQL: a generic database abstraction is
-// the thing every caller pays for and almost no service ever swaps.
+// pgx itself is not confined, on purpose. There is no repository interface
+// over the pool: handlers and stores (auth/pgstore, for one) take
+// *pgxpool.Pool and write SQL, because a generic database abstraction is the
+// thing every caller pays for and almost no service ever swaps. Replacing the
+// driver means rewriting this package and every query.
 package postgres
 
 import (

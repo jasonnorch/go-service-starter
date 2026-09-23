@@ -482,10 +482,14 @@ command -v go >/dev/null 2>&1 || die "Go is not installed — install it and run
 # inside it would survive, orphaned, and likely still import the dependency
 # being removed. Refuse rather than leave that behind or delete something git
 # cannot give back.
+#
+# Ignored files count too, which is why there is no --exclude-standard. A
+# coverage.out or .DS_Store would keep the directory from being deleted, and
+# the recheck would then fail after files were already gone.
 for m in $(printf '%s' "$REMOVE" | tr ',' ' '); do
 	# shellcheck disable=SC2046
-	stray=$(git ls-files --others --exclude-standard -- $(module_paths "$m"))
-	[ -z "$stray" ] || die "untracked files inside module $m — move or commit them first; nothing was written:
+	stray=$(git ls-files --others -- $(module_paths "$m"))
+	[ -z "$stray" ] || die "untracked or ignored files inside module $m — move or delete them first; nothing was written:
 $stray"
 done
 

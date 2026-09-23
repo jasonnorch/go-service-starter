@@ -37,20 +37,29 @@ process.
 | **Middleware** | Recover, request ID, security headers, body limit, access log. |
 | **Health** | `/livez` and `/readyz`, with pluggable readiness checks. |
 | **Database** | Postgres through a pgx pool, goose migrations embedded and applied at startup under an advisory lock. <!-- module:postgres --> |
-| **Cache** | A three-method `Cache` interface, backed by Redis or an in-process map, both held to one contract test. <!-- module:cache --> |
+| **Cache** | A `Cache` interface — get, set with a ttl, delete — backed by Redis or an in-process map, both held to one contract test. <!-- module:cache --> |
 | **Auth** | API keys as bearer tokens, stored only as SHA-256: from config always, and from a revocable Postgres table when that module is kept. <!-- module:auth --> |
 | **Shutdown** | Signal, drain in-flight requests, force-close on a second signal. |
 | **Tooling** | `make verify`, golangci-lint, GitHub Actions, multi-stage Dockerfile. |
 
-Every direct dependency is confined to one package, and everything else is the
+Every direct dependency is set up in one package, and everything else is the
 standard library:
 
 - **Viper**, in `internal/config/load.go`
 - **pgx and goose**, in `internal/postgres` <!-- module:postgres -->
 - **go-redis**, in `internal/cache` <!-- module:cache -->
 
-Confinement is what makes each one replaceable: the rest of the program sees
-what the package returns, never the library that produced it.
+That is what makes each one replaceable. Viper never reaches the rest of the
+program, which sees only a typed `Config`.
+<!-- module:cache begin -->
+Likewise go-redis, behind `cache.Cache`.
+<!-- module:cache end -->
+<!-- module:postgres begin -->
+pgx is the deliberate exception: code that queries the database takes a
+`*pgxpool.Pool` and writes SQL, because an interface over a database is the
+abstraction every caller pays for and almost no service swaps. See
+`docs/decisions.md`.
+<!-- module:postgres end -->
 
 ## Why stdlib and not a framework
 
@@ -71,9 +80,9 @@ code across five files — and the composability is kept:
 func (h *Handler) GetUser(w http.ResponseWriter, r *http.Request) error {
     user, err := h.store.User(r.Context(), r.PathValue("id"))
     if err != nil {
-        // store.ErrNotFound becomes a 404 through one case in respond's
-        // asError, not a check repeated here; anything unrecognized becomes a
-        // 500 whose cause is logged, never sent.
+        // store.ErrNotFound becomes a 404 once you add one case for it to
+        // respond's asError, rather than a check repeated in every handler;
+        // anything unrecognized becomes a 500 whose cause is logged, never sent.
         return err
     }
 
