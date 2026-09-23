@@ -91,3 +91,17 @@ postgres:
   # separate deploy step.
   migrate_on_start: true
 # module:postgres end
+
+# module:cache begin
+cache:
+  # "redis", shared by every instance, or "memory", per instance — right only
+  # for tests and a service that runs exactly one instance.
+  backend: redis
+
+  # The default is the Redis compose.yaml runs (`make up`); production rejects
+  # it, so set CACHE_REDIS_URL there. Unused when backend is memory.
+  redis_url: redis://localhost:6379/0
+
+  # How long startup waits to reach Redis before giving up.
+  connect_timeout: 5s
+# module:cache end

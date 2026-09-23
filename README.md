@@ -9,7 +9,7 @@ git clone https://github.com/jasonnorch/go-service-starter yourthing
 cd yourthing
 ./setup.sh github.com/you/yourthing     # add --without postgres to drop it
 make verify
-make up     # module:postgres — starts Postgres in Docker; the service needs it
+make up     # module:postgres+cache — starts Postgres and Redis; the service needs them
 make run
 ```
 
@@ -37,6 +37,7 @@ process.
 | **Middleware** | Recover, request ID, security headers, body limit, access log. |
 | **Health** | `/livez` and `/readyz`, with pluggable readiness checks. |
 | **Database** | Postgres through a pgx pool, goose migrations embedded and applied at startup under an advisory lock. <!-- module:postgres --> |
+| **Cache** | A three-method `Cache` interface, backed by Redis or an in-process map, both held to one contract test. <!-- module:cache --> |
 | **Shutdown** | Signal, drain in-flight requests, force-close on a second signal. |
 | **Tooling** | `make verify`, golangci-lint, GitHub Actions, multi-stage Dockerfile. |
 
@@ -45,6 +46,7 @@ standard library:
 
 - **Viper**, in `internal/config/load.go`
 - **pgx and goose**, in `internal/postgres` <!-- module:postgres -->
+- **go-redis**, in `internal/cache` <!-- module:cache -->
 
 Confinement is what makes each one replaceable: the rest of the program sees
 what the package returns, never the library that produced it.
@@ -143,8 +145,9 @@ internal/httpapi/decode/ JSON request bodies, with errors that say what to fix
 internal/middleware/     recover, request ID, security headers, body limit, log
 internal/health/         liveness and readiness with registered checks
 internal/postgres/       pgx pool, embedded goose migrations         # module:postgres
+internal/cache/          Cache interface; Redis and in-memory        # module:cache
 internal/requestid/      the correlation ID's context key
-compose.yaml             local Postgres for `make run`, integration  # module:postgres
+compose.yaml             local Postgres and Redis for `make run`     # module:postgres+cache
 ```
 
 ## Endpoints
@@ -164,10 +167,10 @@ blips, turning a recovered dependency into a cold start of the whole fleet.
 | | |
 |---|---|
 | `make verify` | The one that answers "did it work?": gofmt, tidy, vet, lint, `go test -race`. |
-| `make up` / `make down` | Start and stop Postgres in Docker. `make run` needs it. <!-- module:postgres --> |
+| `make up` / `make down` | Start and stop the compose.yaml containers. `make run` needs them. <!-- module:postgres+cache --> |
 | `make run` | Build and run. |
 | `make test` | Tests with the race detector. No containers, no network. |
-| `make test-integration` | Tests against the real Postgres; starts it first. <!-- module:postgres --> |
+| `make test-integration` | Tests against the real servers; starts them first. <!-- module:postgres+cache --> |
 | `make verify-without` | Removes each module in a scratch copy and verifies what is left. |
 | `make lint` | golangci-lint over the whole tree. |
 | `make deps` | Upgrade dependencies and tidy. |
@@ -187,6 +190,7 @@ rather than aspirational. `docs/decisions.md` has the reasoning and the instruct
 | The config loader (koanf, envconfig) | `internal/config/load.go` — the only Viper import |
 | The error envelope | `internal/httpapi/respond/respond.go` |
 | The database driver or migration tool | `internal/postgres/` and its block in `app.Run` <!-- module:postgres --> |
+| The cache backend (Memcached, a managed service) | one new implementation of `cache.Cache` <!-- module:cache --> |
 
 ## Modules
 
@@ -204,14 +208,14 @@ the result still builds and vets. CI removes each module in a scratch copy on
 every pull request (`make verify-without`), so a removal that would leave a
 fork broken fails here first.
 
-- **postgres** — the pgx pool, migrations, `compose.yaml` and the integration tests <!-- module:postgres -->
+- **postgres** — the pgx pool, migrations, and its compose service and integration tests <!-- module:postgres -->
+- **cache** — the `Cache` interface, Redis and in-memory backends, and Redis's compose service <!-- module:cache -->
 
 ## Not included yet
 
-- **Redis** — a `Cache` interface with Redis and in-memory implementations
 - **Auth** — API keys, backed by Postgres when it is present and config when not
 
-Each will land as a module.
+It will land as a module.
 
 **Rate limiting is left out on purpose.** An in-process limiter counts per
 instance, so three instances allow three times the limit and nothing says so.

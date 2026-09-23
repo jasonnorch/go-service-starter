@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jasonnorch/go-service-starter/internal/cache" // module:cache
 	"github.com/jasonnorch/go-service-starter/internal/config"
 	"github.com/jasonnorch/go-service-starter/internal/health"
 	"github.com/jasonnorch/go-service-starter/internal/httpapi"
@@ -75,6 +76,17 @@ func Run(ctx context.Context, version string) error {
 	defer pool.Close()
 	checker.Register("postgres", pool.Ping)
 	// module:postgres end
+
+	// module:cache begin
+	// Pass kv to the handlers that need it. It is closed after the drain for
+	// the same reason as the pool.
+	kv, err := cache.Open(ctx, cfg.Cache)
+	if err != nil {
+		return fmt.Errorf("opening cache: %w", err)
+	}
+	defer func() { _ = kv.Close() }()
+	checker.Register("cache", kv.Ping)
+	// module:cache end
 
 	server := httpapi.NewServer(newRouter(cfg, logger, version, checker), cfg.Server)
 

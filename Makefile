@@ -5,7 +5,7 @@ BUILD_DIR := bin
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
 .PHONY: all build clean deps lint verify verify-without test run
-.PHONY: test-integration up down # module:postgres
+.PHONY: test-integration up down # module:postgres+cache
 
 all: verify build
 
@@ -25,9 +25,9 @@ deps:
 test:
 	go test -race -count=1 ./...
 
-# module:postgres begin
+# module:postgres+cache begin
 # The containers in compose.yaml. --wait blocks until their healthchecks pass,
-# so whatever runs next never races a database that is still starting.
+# so whatever runs next never races a server that is still starting.
 up:
 	docker compose up -d --wait
 
@@ -35,12 +35,21 @@ down:
 	docker compose down
 
 # Tests behind the `integration` build tag, against the containers `make up`
-# starts. Kept out of `make test` and `make verify` so both stay hermetic; the
-# URL defaults to compose's database and can be overridden from the shell.
-POSTGRES_URL ?= postgres://app:app@localhost:5432/app?sslmode=disable
-test-integration: up
-	POSTGRES_URL='$(POSTGRES_URL)' go test -race -count=1 -tags integration ./...
+# starts. Kept out of `make test` and `make verify` so both stay hermetic. The
+# URLs default to compose's servers and can be overridden from the shell; they
+# are exported for this target only, so `make run` never inherits them.
+#
+# The markers sit on their own lines: make keeps the space before a trailing
+# `# comment` as part of a variable's value, which corrupts a URL.
+# module:postgres begin
+test-integration: export POSTGRES_URL ?= postgres://app:app@localhost:5432/app?sslmode=disable
 # module:postgres end
+# module:cache begin
+test-integration: export CACHE_REDIS_URL ?= redis://localhost:6379/0
+# module:cache end
+test-integration: up
+	go test -race -count=1 -tags integration ./...
+# module:postgres+cache end
 
 # golangci-lint defaults to reporting at most 50 issues per linter and 3 per
 # identical message, silently. Turning both off matters more than it sounds: a

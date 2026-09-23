@@ -332,6 +332,58 @@ the block in `app.Run`, the `postgres` section of the config, and
 ---
 <!-- module:postgres end -->
 
+<!-- module:cache begin -->
+## A cache behind a small interface
+
+**The decision.** `internal/cache` defines a three-method `Cache` interface,
+plus `Ping` and `Close` for the wiring, with two implementations: Redis, and
+an in-process `Memory`. `cache.backend` picks one at startup. go-redis is
+imported nowhere else.
+
+**Why an interface here when Postgres has none.** The two cases differ in the
+way that matters. Caches really are swapped: Redis, Memcached, a managed
+service, or nothing but a map in tests. Their shared surface is small enough to
+state completely: get, set with an expiry, delete. A database's surface is SQL,
+and an interface over it is either a leaky copy of SQL or a lowest common
+denominator nobody wants. Memory also proves the seam holds, because it is a
+second implementation that already exists, rather than an interface written for
+one type in anticipation of another. The interface lives in the package rather
+than at a consumer because `Open` has to return one of two types. A consumer
+that needs less should still declare its own narrower interface.
+
+**Why one contract test for both.** A cache test run against Memory is only
+worth something if Memory behaves like Redis. `runContract` is the single
+statement of that behavior. Memory runs it in `make test` and Redis runs it in
+`make test-integration`, so a difference fails in one place instead of passing
+in tests and surprising production. The contract is why Memory copies values
+on Get (Redis always returns fresh bytes), and why both implementations refuse
+a non-positive ttl: go-redis reads 0 as "never expire" and -1 as "keep the old
+expiry", and neither is what a caller who passed one by mistake meant.
+
+**Why the Redis URL's parse error is rewritten.** go-redis passes `net/url`'s
+error through, and `*url.Error` quotes the whole URL, password included. A
+malformed `CACHE_REDIS_URL` would have written the password into the log of
+every failed start. `openRedis` keeps the reason and drops the URL, and
+`TestOpenRedisDoesNotLeakThePasswordOnAParseError` covers each way a URL fails
+to parse. The test found this: three of its five cases leaked before the fix.
+
+**Why Memory is not the default.** Every instance has its own map, so two
+instances behind a load balancer disagree about what is cached, and nothing
+reports it. That is fine for tests and for a service that runs exactly one
+instance, and quietly wrong for anything else. So `redis` is the default, and
+choosing `memory` is a decision someone makes on purpose.
+
+**What it costs.** One direct dependency (go-redis) and two small indirect
+ones (a hash and an atomics package). A Redis container in `compose.yaml`, which `make run`
+now needs, and a service container in CI.
+
+**To swap it.** A different backend is one new type satisfying `Cache`, plus a
+case in `Open`. Run `runContract` against it to prove it behaves. To drop
+caching entirely, `./setup.sh --without cache`.
+
+---
+<!-- module:cache end -->
+
 ## Load-bearing details that look removable
 
 ### The embedded defaults must list every key

@@ -23,6 +23,7 @@ type Config struct {
 	Server   Server   `mapstructure:"server"   json:"server"`
 	Log      Log      `mapstructure:"log"      json:"log"`
 	Postgres Postgres `mapstructure:"postgres" json:"postgres"` // module:postgres
+	Cache    Cache    `mapstructure:"cache"    json:"cache"`    // module:cache
 }
 
 // Service holds the service's identity.
@@ -86,3 +87,22 @@ type Postgres struct {
 const DevPostgresURL = "postgres://app:app@localhost:5432/app?sslmode=disable" //nolint:gosec // the local compose container's credentials, rejected in production by Validate
 
 // module:postgres end
+
+// module:cache begin
+
+// Cache holds the cache's parameters. Passed whole to cache.Open.
+type Cache struct {
+	// Backend is "redis" or "memory". Memory is per-instance, so it is right
+	// only for tests and for a service that runs exactly one instance.
+	Backend string `mapstructure:"backend" json:"backend"`
+	// RedisURL is a redis:// URL. It is a Secret because it can carry a
+	// password. Unused when Backend is "memory".
+	RedisURL       Secret        `mapstructure:"redis_url"       json:"redis_url"`
+	ConnectTimeout time.Duration `mapstructure:"connect_timeout" json:"connect_timeout"`
+}
+
+// DevRedisURL is the default cache.redis_url: the Redis compose.yaml runs.
+// Validate rejects it in production, for the same reason as DevPostgresURL.
+const DevRedisURL = "redis://localhost:6379/0"
+
+// module:cache end

@@ -24,6 +24,7 @@ var configEnvPrefixes = []string{
 	"SERVER_",
 	"LOG_",
 	"POSTGRES_", // module:postgres
+	"CACHE_",    // module:cache
 }
 
 // isolate removes every input Load reads except the embedded defaults: the
@@ -103,6 +104,11 @@ func TestLoadDefaultsAreCompleteAndValid(t *testing.T) {
 		t.Errorf("postgres.url default = %q, want config.DevPostgresURL", got)
 	}
 	// module:postgres end
+	// module:cache begin
+	if got := cfg.Cache.RedisURL.Reveal(); got != config.DevRedisURL {
+		t.Errorf("cache.redis_url default = %q, want config.DevRedisURL", got)
+	}
+	// module:cache end
 }
 
 // defaults.yaml must list every key in Config, because reading it is what

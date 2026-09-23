@@ -26,10 +26,11 @@ internal/httpapi/decode/   JSON request bodies, with errors that say what to fix
 internal/middleware/       recover, request ID, security headers, body limit, log
 internal/health/           liveness and readiness with registered checks
 internal/postgres/         pgx pool, embedded goose migrations   # module:postgres
+internal/cache/            Cache interface; Redis and in-memory  # module:cache
 internal/requestid/        the correlation ID's context key
 docs/decisions.md          why each opinion is what it is, and how to swap it
 config.example.yaml        symlink to internal/config/defaults.yaml — never a copy
-compose.yaml               local Postgres for `make run`          # module:postgres
+compose.yaml               local Postgres and Redis for `make run` # module:postgres+cache
 ```
 
 ## Commands
@@ -38,13 +39,13 @@ compose.yaml               local Postgres for `make run`          # module:postg
   -diff`, `go vet`, golangci-lint over the whole tree, `go test -race`.
   Non-destructive, runs everything before reporting. Run it before presenting
   work as done, and report the real output.
-<!-- module:postgres begin -->
+<!-- module:postgres+cache begin -->
 - `make up` / `make down` — start and stop the compose.yaml containers.
-  `make run` needs them, since startup fails without a database.
+  `make run` needs them, since startup fails without its dependencies.
 - `make test-integration` — the `integration`-tagged tests against those
   containers (runs `make up` first). `make verify` does not run them and needs
   no containers, but it does compile and vet them.
-<!-- module:postgres end -->
+<!-- module:postgres+cache end -->
 - `make run` — build and run; `make test` — tests with the race detector
 - `make lint` — golangci-lint alone
 - `./setup.sh github.com/you/yourthing [--without <module>,...]` — rename the
@@ -207,6 +208,12 @@ Nothing in `internal/health` learns what the dependency is.
   the fork broken. Run it before opening the PR.
 - **Register it in `setup.sh`**: a name in `KNOWN_MODULES` and its paths in
   `module_paths`.
+- **Shared by several modules: join with `+`.** `module:postgres+cache` stays
+  until every named module is gone, as `compose.yaml`'s header and `make up`
+  do. `module:postgres,auth` goes with either.
+- **Never put a line marker on a Makefile variable assignment.** make keeps the
+  space before a trailing `# comment` in the value, and the corrupted URL fails
+  far from the cause. Use a begin/end pair on lines of their own.
 - **Close with a defer in `app.Run`, not on `appCtx`.** `appCancel` fires
   before the server drains, so a pool closed there disappears under requests
   still in flight.

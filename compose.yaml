@@ -1,10 +1,14 @@
+# module:postgres+cache begin
 # Local dependencies for `make run` and `make test-integration`. Start with
 # `make up`, stop with `make down`. Nothing here is used by `make verify`, which
 # needs no containers.
 #
-# The credentials match postgres.url's default in internal/config/defaults.yaml.
-# They are for this local container only; production rejects that default.
+# Each service belongs to a module and goes with it (`./setup.sh --without`);
+# the file goes when the last of them does. The credentials match the defaults
+# in internal/config/defaults.yaml. They are for these local containers only;
+# production rejects those defaults.
 services:
+  # module:postgres begin
   postgres:
     image: postgres:18-alpine
     environment:
@@ -19,3 +23,17 @@ services:
       interval: 2s
       timeout: 3s
       retries: 15
+  # module:postgres end
+
+  # module:cache begin
+  redis:
+    image: redis:8-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+  # module:cache end
+# module:postgres+cache end

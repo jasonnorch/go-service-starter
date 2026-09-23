@@ -27,6 +27,13 @@ func valid() *config.Config {
 			ConnectTimeout: 10 * time.Second,
 		},
 		// module:postgres end
+		// module:cache begin
+		Cache: config.Cache{
+			Backend:        "redis",
+			RedisURL:       config.DevRedisURL,
+			ConnectTimeout: 5 * time.Second,
+		},
+		// module:cache end
 	}
 }
 
@@ -35,6 +42,21 @@ func TestValidateAcceptsValidConfig(t *testing.T) {
 		t.Fatalf("Validate on a valid config: %v", err)
 	}
 }
+
+// module:cache begin
+// The memory backend needs no URL, so an empty one must not fail validation;
+// otherwise a test or single-instance setup has to invent a Redis URL it never
+// uses.
+func TestValidateMemoryCacheNeedsNoURL(t *testing.T) {
+	cfg := valid()
+	cfg.Cache.Backend = "memory"
+	cfg.Cache.RedisURL = ""
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate rejected a memory cache with no URL: %v", err)
+	}
+}
+
+// module:cache end
 
 func TestValidateNamesTheOffendingKey(t *testing.T) {
 	tests := []struct {
@@ -64,6 +86,17 @@ func TestValidateNamesTheOffendingKey(t *testing.T) {
 		{"zero max conns", func(c *config.Config) { c.Postgres.MaxConns = 0 }, "postgres.max_conns"},
 		{"zero connect timeout", func(c *config.Config) { c.Postgres.ConnectTimeout = 0 }, "postgres.connect_timeout"},
 		// module:postgres end
+		// module:cache begin
+		{"unknown cache backend", func(c *config.Config) { c.Cache.Backend = "memcached" }, "cache.backend"},
+		{"redis backend without a url", func(c *config.Config) { c.Cache.RedisURL = "" }, "cache.redis_url"},
+		// A production deploy missing CACHE_REDIS_URL would otherwise start and
+		// dial a Redis on localhost that is not there.
+		{"development redis url in production", func(c *config.Config) {
+			c.Service.Environment = config.EnvProduction
+			c.Postgres.URL = "postgres://prod" // module:postgres
+		}, "cache.redis_url"},
+		{"zero cache connect timeout", func(c *config.Config) { c.Cache.ConnectTimeout = 0 }, "cache.connect_timeout"},
+		// module:cache end
 	}
 
 	for _, tt := range tests {

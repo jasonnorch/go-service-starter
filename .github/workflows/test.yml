@@ -80,13 +80,14 @@ jobs:
       - name: Test
         run: go test -race -count=1 ./...
 
-  # module:postgres begin
+  # module:postgres+cache begin
   integration:
     name: Integration tests
     runs-on: ubuntu-latest
-    # The same image and credentials as compose.yaml, so a test that passes
+    # The same images and credentials as compose.yaml, so a test that passes
     # under `make test-integration` passes here for the same reasons.
     services:
+      # module:postgres begin
       postgres:
         image: postgres:18-alpine
         env:
@@ -100,6 +101,18 @@ jobs:
           --health-interval 2s
           --health-timeout 3s
           --health-retries 15
+      # module:postgres end
+      # module:cache begin
+      redis:
+        image: redis:8-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 15
+      # module:cache end
     steps:
       - uses: actions/checkout@v7
         with:
@@ -110,13 +123,14 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      # The integration tests fail rather than skip without POSTGRES_URL, so a
+      # The integration tests fail rather than skip without their URL, so a
       # missing service here is a red job, not a green one that tested nothing.
       - name: Integration tests
         env:
-          POSTGRES_URL: postgres://app:app@localhost:5432/app?sslmode=disable
+          POSTGRES_URL: postgres://app:app@localhost:5432/app?sslmode=disable # module:postgres
+          CACHE_REDIS_URL: redis://localhost:6379/0 # module:cache
         run: go test -race -count=1 -tags integration ./...
-  # module:postgres end
+  # module:postgres+cache end
 
   # Every `./setup.sh --without` a fork could run, each in a scratch copy, held
   # to what the fork's own `make verify` would check. Without this, a removal

@@ -144,18 +144,22 @@ git rev-parse --is-inside-work-tree >/dev/null 2>&1 ||
 #   everything between module:<names> begin
 #                  and module:<names> end      is removed with it, markers too
 #
-# <names> is one module or a comma-separated list, and a line or block is
-# removed when ANY module it names is removed — which is how code that needs
-# two modules at once goes away with either. The comment can be //, # or <!--.
+# <names> is one module, or a list joined by commas or by plus signs:
+#   a,b   removed when ANY of them is gone — code that needs both at once
+#   a+b   removed when ALL of them are gone — something they share, like
+#         compose.yaml's header or `make up`, which outlives any one of them
+# "Gone" counts modules removed on an earlier run as well as this one. A file
+# that removal leaves empty is deleted. The comment can be //, # or <!--.
 #
 # module_paths is the other half: the files that are the module outright. Only
 # their tracked files are deleted. Adding a module means a case here, a name in
 # KNOWN_MODULES, and markers on everything outside these paths that mentions it.
-KNOWN_MODULES=postgres
+KNOWN_MODULES=postgres,cache
 
 module_paths() {
 	case $1 in
-	postgres) echo internal/postgres compose.yaml ;;
+	postgres) echo internal/postgres ;;
+	cache) echo internal/cache ;;
 	*) return 1 ;;
 	esac
 }
@@ -163,8 +167,8 @@ module_paths() {
 # The marker pass, in perl for the same reason as the anchors below. One
 # program does both jobs so the check cannot drift from what is applied:
 #   MARKERS_MODE=check  reports malformed markers, writes nothing
-#   MARKERS_MODE=strip  also removes what MARKERS_REMOVE names, and prints the
-#                       name of every file it changed
+#   MARKERS_MODE=strip  also removes what MARKERS_GONE names, and prints the
+#                       name of every file it changed or deleted
 # Every file is checked before any is written, so a malformed marker in one
 # file leaves all of them untouched.
 MARKERS_PROGRAM=$(
@@ -172,10 +176,10 @@ MARKERS_PROGRAM=$(
 use strict;
 use warnings FATAL => 'all';
 
-my %known  = map { $_ => 1 } split /,/, $ENV{MARKERS_KNOWN};
-my %remove = map { $_ => 1 } split /,/, $ENV{MARKERS_REMOVE};
-my $strip  = $ENV{MARKERS_MODE} eq 'strip';
-my $bad    = 0;
+my %known = map { $_ => 1 } split /,/, $ENV{MARKERS_KNOWN};
+my %gone  = map { $_ => 1 } split /,/, $ENV{MARKERS_GONE};
+my $strip = $ENV{MARKERS_MODE} eq 'strip';
+my $bad   = 0;
 my %out;
 
 for my $file (@ARGV) {
@@ -184,14 +188,19 @@ for my $file (@ARGV) {
 	my ($skip, $changed) = (0, 0);
 	while (my $line = <$in>) {
 		my $n = $.;
-		if ($line =~ m{(?://|\#|<!--)\s*module:([a-z][a-z,]*)(?:\s+(begin|end)\b)?}) {
+		if ($line =~ m{(?://|\#|<!--)\s*module:([a-z][a-z,+]*)(?:\s+(begin|end)\b)?}) {
 			my ($names, $kind) = ($1, $2 // 'line');
-			my @names = split /,/, $names;
+			if ($names =~ /,/ && $names =~ /\+/) {
+				warn "$file:$n: \"module:$names\" mixes , and + — use one\n";
+				$bad = 1;
+			}
+			my @names = split /[,+]/, $names;
 			for (grep { !$known{$_} } @names) {
 				warn "$file:$n: unknown module \"$_\"\n";
 				$bad = 1;
 			}
-			my $named = grep { $remove{$_} } @names;
+			my $gone = grep { $gone{$_} } @names;
+			my $named = $names =~ /\+/ ? $gone == @names : $gone > 0;
 			if ($kind eq 'begin') {
 				push @open, [$names, $n];
 				$skip++ if $skip || $named;
@@ -234,6 +243,13 @@ exit 0 unless $strip;
 for my $file (sort keys %out) {
 	# A removed block leaves the blank lines on either side of it adjacent.
 	(my $text = $out{$file}) =~ s/\n{3,}/\n\n/g;
+	if ($text !~ /\S/) {
+		# Everything in it belonged to removed modules, like compose.yaml once
+		# the last service is gone. An empty file left behind is just noise.
+		unlink $file or die "deleting $file: $!\n";
+		print "$file\n";
+		next;
+	}
 	open my $o, '>', $file or die "writing $file: $!\n";
 	print {$o} $text or die "writing $file: $!\n";
 	close $o or die "writing $file: $!\n";
@@ -248,7 +264,7 @@ PERL
 # arguments and does nothing; the program never reads stdin.
 markers() {
 	{ git grep -lzE '(//|#|<!--)[[:space:]]*module:[a-z]' -- . ':!setup.sh' || true; } |
-		MARKERS_MODE=$1 MARKERS_REMOVE=${2:-} MARKERS_KNOWN=$KNOWN_MODULES \
+		MARKERS_MODE=$1 MARKERS_GONE=${2:-} MARKERS_KNOWN=$KNOWN_MODULES \
 			xargs -0 perl -e "$MARKERS_PROGRAM"
 }
 
@@ -271,8 +287,11 @@ path_state() {
 	esac
 }
 has_paths() { [ "$(path_state "$1")" != none ]; }
+# Only markers that name the module on its own or in an any-of (,) list count:
+# an all-of (+) marker outlives the module by design, so its presence says
+# nothing about whether this one is still here.
 has_markers() {
-	git grep -qE "(//|#|<!--)[[:space:]]*module:([a-z]+,)*$1(,[a-z]+)*([^a-z,]|\$)" -- . ':!setup.sh'
+	git grep -qE "(//|#|<!--)[[:space:]]*module:([a-z]+,)*$1(,[a-z]+)*([^a-z,+]|\$)" -- . ':!setup.sh'
 }
 present() { has_paths "$1" || has_markers "$1"; }
 
@@ -504,6 +523,14 @@ if [ "$RENAME" = 1 ]; then
 fi
 
 if [ -n "$REMOVE" ]; then
+	# Everything gone once this run finishes: what it removes, plus modules an
+	# earlier run already removed. An all-of (+) marker needs both, or removing
+	# the last module on a later run would leave the shared lines behind.
+	GONE=$REMOVE
+	for m in $(printf '%s' "$KNOWN_MODULES" | tr ',' ' '); do
+		if ! present "$m"; then GONE="$GONE,$m"; fi
+	done
+
 	# Tracked files only, with plain rm rather than git rm: the index keeps them,
 	# so `git restore .` brings them back like every other change here.
 	for m in $(printf '%s' "$REMOVE" | tr ',' ' '); do
@@ -515,17 +542,16 @@ if [ -n "$REMOVE" ]; then
 		done
 	done
 
-	STRIPPED=$(markers strip "$REMOVE") || die "removing module markers failed — $UNDO"
+	STRIPPED=$(markers strip "$GONE") || die "removing module markers failed — $UNDO"
 
 	# Removing a struct field or a case changes gofmt's alignment of what is
 	# left, so the files that changed are formatted, or the fork's first
-	# `make verify` would fail on gofmt.
-	# shellcheck disable=SC2086 # the paths come from git and contain no spaces
-	gofmt_targets=$(printf '%s\n' $STRIPPED | grep '\.go$' || true)
-	if [ -n "$gofmt_targets" ]; then
-		# shellcheck disable=SC2086
-		gofmt -w $gofmt_targets || die "formatting failed — $UNDO"
-	fi
+	# `make verify` would fail on gofmt. A file stripping deleted is skipped.
+	printf '%s\n' "$STRIPPED" | while IFS= read -r f; do
+		case $f in
+		*.go) [ ! -f "$f" ] || gofmt -w "$f" || exit 1 ;;
+		esac
+	done || die "formatting failed — $UNDO"
 
 	# Recheck that every removal landed: no path of a removed module still has a
 	# file, and no marker still names one.
