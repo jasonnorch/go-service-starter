@@ -391,16 +391,16 @@ func TestRequestLoggerDefaultsToTheStatusNetHTTPSends(t *testing.T) {
 // do.
 func TestRequestLoggerSkipsQuietPaths(t *testing.T) {
 	logger, logged := capture()
-	h := middleware.RequestLogger(logger, "/healthz", "/readyz")(ok)
+	h := middleware.RequestLogger(logger, "/livez", "/readyz")(ok)
 
-	serve(h, get("/healthz"))
+	serve(h, get("/livez"))
 	serve(h, get("/readyz"))
 	if logged.Len() != 0 {
 		t.Errorf("a quiet path was logged: %s", logged.String())
 	}
 
 	// Exact match, not prefix: a route must never be silenced by accident.
-	serve(h, get("/healthz/details"))
+	serve(h, get("/livez/details"))
 	if logged.Len() == 0 {
 		t.Error("a path merely prefixed by a quiet one was silenced")
 	}

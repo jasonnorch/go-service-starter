@@ -34,9 +34,9 @@ COPY --from=build /app/service /usr/local/bin/service
 USER appuser
 EXPOSE 8080
 
-# For docker run and Compose; an orchestrator uses /healthz and /readyz directly
+# For docker run and Compose; an orchestrator uses /livez and /readyz directly
 # and ignores this. wget is busybox's, already present.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD wget --quiet --tries=1 --spider http://localhost:8080/healthz || exit 1
+    CMD wget --quiet --tries=1 --spider http://localhost:8080/livez || exit 1
 
 ENTRYPOINT ["service"]
