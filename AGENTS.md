@@ -25,9 +25,11 @@ internal/httpapi/respond/  the Error type and every response written
 internal/httpapi/decode/   JSON request bodies, with errors that say what to fix
 internal/middleware/       recover, request ID, security headers, body limit, log
 internal/health/           liveness and readiness with registered checks
+internal/postgres/         pgx pool, embedded goose migrations; the only pgx import
 internal/requestid/        the correlation ID's context key
 docs/decisions.md          why each opinion is what it is, and how to swap it
 config.example.yaml        symlink to internal/config/defaults.yaml — never a copy
+compose.yaml               local Postgres for `make run` and integration tests
 ```
 
 ## Commands
@@ -36,6 +38,11 @@ config.example.yaml        symlink to internal/config/defaults.yaml — never a 
   -diff`, `go vet`, golangci-lint over the whole tree, `go test -race`.
   Non-destructive, runs everything before reporting. Run it before presenting
   work as done, and report the real output.
+- `make up` / `make down` — start and stop the compose.yaml containers.
+  `make run` needs them, since startup fails without a database.
+- `make test-integration` — the `integration`-tagged tests against those
+  containers (runs `make up` first). `make verify` does not run them and needs
+  no containers, but it does compile and vet them.
 - `make run` — build and run; `make test` — tests with the race detector
 - `make lint` — golangci-lint alone
 - `./setup.sh github.com/you/yourthing` — rename the template to a fork's own
@@ -161,12 +168,22 @@ accident.
   accessor precisely so `grep -rn '\.Reveal()'` audits every use.
 - Readiness responses report which check failed, never why. The reason goes to
   the log.
-- Adding a dependency is a decision, not a step. This repo has one direct
-  dependency and the count is part of what it is offering — say so in the PR.
+- Adding a dependency is a decision, not a step. Each direct dependency is
+  confined to one package — Viper to `internal/config/load.go`, pgx and goose
+  to `internal/postgres` — and that confinement is what makes it swappable.
+  Say so in the PR, and name the package it is confined to.
 
 ## Adding a dependency-backed feature
 
-The deferred work (Postgres, Redis, auth, rate limiting) each lands as its own
-package plus one guarded block in `app.Run`, and registers its own readiness
-check with `health.Checker`. Nothing in `internal/health` learns what a Postgres
-pool is.
+`internal/postgres` is the pattern. A dependency lands as its own package plus
+one block in `app.Run`, which opens it, defers its close, and registers its own
+readiness check with `health.Checker`. Nothing in `internal/health` learns what
+a Postgres pool is.
+
+- **Close with a defer in `app.Run`, not on `appCtx`.** `appCancel` fires
+  before the server drains, so a pool closed there disappears under requests
+  still in flight.
+- **Fail at startup when the dependency is unreachable.** A service that starts
+  without it reports ready and fails every request that needs it.
+- **Its tests that need the real thing go behind `//go:build integration`** and
+  fail, not skip, when their URL is unset. `make verify` stays hermetic.

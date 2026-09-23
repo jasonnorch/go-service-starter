@@ -4,7 +4,7 @@ APP_NAME := go-service-starter
 BUILD_DIR := bin
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
-.PHONY: all build clean deps lint verify test run
+.PHONY: all build clean deps lint verify test test-integration run up down
 
 all: verify build
 
@@ -24,10 +24,28 @@ deps:
 test:
 	go test -race -count=1 ./...
 
+# The containers in compose.yaml. --wait blocks until their healthchecks pass,
+# so whatever runs next never races a database that is still starting.
+up:
+	docker compose up -d --wait
+
+down:
+	docker compose down
+
+# Tests behind the `integration` build tag, against the containers `make up`
+# starts. Kept out of `make test` and `make verify` so both stay hermetic; the
+# URL defaults to compose's database and can be overridden from the shell.
+POSTGRES_URL ?= postgres://app:app@localhost:5432/app?sslmode=disable
+test-integration: up
+	POSTGRES_URL='$(POSTGRES_URL)' go test -race -count=1 -tags integration ./...
+
 # golangci-lint defaults to reporting at most 50 issues per linter and 3 per
 # identical message, silently. Turning both off matters more than it sounds: a
 # capped count reads as a backlog you can finish and then cannot.
-LINT_FLAGS := --timeout 10m --max-issues-per-linter=0 --max-same-issues=0
+#
+# --build-tags integration lints the integration tests too. They only run
+# against a database, so without it they would go unchecked until they broke.
+LINT_FLAGS := --timeout 10m --max-issues-per-linter=0 --max-same-issues=0 --build-tags integration
 
 # Config lives in .golangci.yml, copied from the fleet repo
 # (~/development/agentic/lint/go/.golangci.yml). It is copied rather than
@@ -68,7 +86,7 @@ verify:
 	printf '\033[2m→ go mod tidy -diff\033[0m\n'; \
 	go mod tidy -diff || failed=1; \
 	printf '\033[2m→ go vet\033[0m\n'; \
-	go vet ./... || failed=1; \
+	go vet -tags integration ./... || failed=1; \
 	printf '\033[2m→ golangci-lint\033[0m\n'; \
 	golangci-lint run $(LINT_FLAGS) ./... || failed=1; \
 	printf '\033[2m→ go test -race\033[0m\n'; \

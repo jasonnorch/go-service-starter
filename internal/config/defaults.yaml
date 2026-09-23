@@ -69,3 +69,23 @@ log:
   # Include the source file and line on every record. Useful while developing,
   # noisy and measurably slower in production.
   add_source: false
+
+postgres:
+  # A libpq connection string. The default is the database compose.yaml runs
+  # (`make up`); production rejects it, so set POSTGRES_URL there. The password
+  # is never logged.
+  url: postgres://app:app@localhost:5432/app?sslmode=disable
+
+  # Upper bound on open connections from this instance. Multiply by the number
+  # of instances and keep the result under the server's max_connections.
+  max_conns: 10
+
+  # How long startup waits to reach the database before giving up. Startup
+  # fails rather than serving without a database.
+  connect_timeout: 10s
+
+  # Apply pending migrations (internal/postgres/migrations) before serving.
+  # Concurrent instances take a Postgres advisory lock: one migrates, and the
+  # rest wait for it, polling every 5s. Turn off if migrations run as a
+  # separate deploy step.
+  migrate_on_start: true

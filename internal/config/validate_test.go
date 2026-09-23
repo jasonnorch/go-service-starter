@@ -20,6 +20,11 @@ func valid() *config.Config {
 			BodyLimit:       1 << 20,
 		},
 		Log: config.Log{Level: "info", Format: config.FormatText},
+		Postgres: config.Postgres{
+			URL:            config.DevPostgresURL,
+			MaxConns:       10,
+			ConnectTimeout: 10 * time.Second,
+		},
 	}
 }
 
@@ -46,6 +51,15 @@ func TestValidateNamesTheOffendingKey(t *testing.T) {
 		{"zero body limit", func(c *config.Config) { c.Server.BodyLimit = 0 }, "server.body_limit"},
 		{"unknown level", func(c *config.Config) { c.Log.Level = "verbose" }, "log.level"},
 		{"unknown format", func(c *config.Config) { c.Log.Format = "logfmt" }, "log.format"},
+		{"empty postgres url", func(c *config.Config) { c.Postgres.URL = "" }, "postgres.url"},
+		// The failure this prevents: a production deploy missing POSTGRES_URL
+		// starts, dials localhost, and fails in a way that looks like an outage
+		// rather than a configuration error.
+		{"development postgres url in production", func(c *config.Config) {
+			c.Service.Environment = config.EnvProduction
+		}, "postgres.url"},
+		{"zero max conns", func(c *config.Config) { c.Postgres.MaxConns = 0 }, "postgres.max_conns"},
+		{"zero connect timeout", func(c *config.Config) { c.Postgres.ConnectTimeout = 0 }, "postgres.connect_timeout"},
 	}
 
 	for _, tt := range tests {
