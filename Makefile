@@ -121,6 +121,15 @@ verify:
 # on disk. It is separate from verify only because it is slower; CI runs it on
 # every pull request. Asking setup.sh which modules are present, rather than
 # listing them here, keeps it correct in a fork that has already removed some.
+#
+# The copy gets a git repository of its own. The copied .git is deleted, not
+# reused: in a linked worktree it is a file pointing back at the real
+# repository, and committing through it would rewrite the real index and branch.
+# The snapshot commit also bypasses the user's hooks and commit signing, which
+# have nothing to say about a throwaway commit and could fail or prompt.
+#
+# Each run's output is kept and printed only when it fails, so a green run stays
+# quiet and a red one says why.
 verify-without:
 	@modules="$$(./setup.sh --modules)"; \
 	if [ -z "$$modules" ]; then echo "no modules to remove"; exit 0; fi; \
@@ -133,16 +142,22 @@ verify-without:
 		printf '\033[2m→ without %s\033[0m\n' "$$m"; \
 		dir="$$(mktemp -d)"; \
 		cp -R . "$$dir/repo"; \
+		rm -rf "$$dir/repo/.git"; \
 		( cd "$$dir/repo" && \
+		  git init -q && \
 		  git add -A && \
-		  git -c user.name=verify -c user.email=verify@localhost commit -q --allow-empty -m 'verify-without snapshot' && \
-		  ./setup.sh --without "$$m" >/dev/null && \
+		  git -c user.name=verify -c user.email=verify@localhost \
+		      -c commit.gpgsign=false -c core.hooksPath=/dev/null \
+		      commit -q -m 'verify-without snapshot' && \
+		  ./setup.sh --without "$$m" && \
 		  unformatted="$$(gofmt -l .)" && \
 		  { [ -z "$$unformatted" ] || { printf 'needs gofmt:\n%s\n' "$$unformatted"; false; }; } && \
-		  ./setup.sh --check >/dev/null && \
-		  golangci-lint run $(LINT_FLAGS) ./... >/dev/null && \
-		  go test -race -count=1 ./... >/dev/null \
-		) || { printf '\033[31m✗ without %s\033[0m\n' "$$m"; failed=1; }; \
+		  ./setup.sh --check && \
+		  golangci-lint run $(LINT_FLAGS) ./... && \
+		  go test -race -count=1 ./... \
+		) >"$$dir/log" 2>&1 || { \
+			printf '\033[31m✗ without %s\033[0m\n' "$$m"; cat "$$dir/log"; failed=1; \
+		}; \
 		rm -rf "$$dir"; \
 	done; \
 	if [ $$failed -eq 0 ]; then \

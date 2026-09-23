@@ -9,6 +9,7 @@ package app
 
 import (
 	"context"
+	"errors" // module:auth
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -17,7 +18,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jasonnorch/go-service-starter/internal/cache" // module:cache
+	"github.com/jasonnorch/go-service-starter/internal/auth"         // module:auth
+	"github.com/jasonnorch/go-service-starter/internal/auth/pgstore" // module:postgres,auth
+	"github.com/jasonnorch/go-service-starter/internal/cache"        // module:cache
 	"github.com/jasonnorch/go-service-starter/internal/config"
 	"github.com/jasonnorch/go-service-starter/internal/health"
 	"github.com/jasonnorch/go-service-starter/internal/httpapi"
@@ -88,7 +91,27 @@ func Run(ctx context.Context, version string) error {
 	checker.Register("cache", kv.Ping)
 	// module:cache end
 
-	server := httpapi.NewServer(newRouter(cfg, logger, version, checker), cfg.Server)
+	// Modules that serve routes add a registrar here; newRouter mounts them
+	// inside the global middleware stack like every other route.
+	var moduleRoutes []func(*httpapi.Group)
+
+	// module:auth begin
+	configKeys, err := auth.NewConfigStore(cfg.Auth.Keys)
+	if err != nil {
+		return fmt.Errorf("configuring auth: %w", err)
+	}
+	// Config first, so a key there works even when the database cannot answer. // module:postgres,auth
+	keys := auth.Stores{configKeys}
+	// module:postgres,auth begin
+	keys = append(keys, pgstore.New(pool))
+	// module:postgres,auth end
+	moduleRoutes = append(moduleRoutes, func(g *httpapi.Group) {
+		v1 := g.Group("/v1", auth.Require(keys, logger))
+		v1.HandleFunc("GET /whoami", whoamiHandler(logger))
+	})
+	// module:auth end
+
+	server := httpapi.NewServer(newRouter(cfg, logger, version, checker, moduleRoutes), cfg.Server)
 
 	// Buffered for two: the second signal is what forces a hung shutdown to
 	// finish, and signal.Notify drops signals rather than blocking on a full
@@ -102,8 +125,9 @@ func Run(ctx context.Context, version string) error {
 
 // newRouter assembles the handler tree. It lives here rather than in httpapi
 // because it is the wiring, not the machinery — this is the function a fork
-// edits to add routes.
-func newRouter(cfg *config.Config, logger *slog.Logger, version string, checker *health.Checker) http.Handler {
+// edits to add routes. moduleRoutes are the routes modules contribute, mounted
+// on the same group so they sit inside the same global stack.
+func newRouter(cfg *config.Config, logger *slog.Logger, version string, checker *health.Checker, moduleRoutes []func(*httpapi.Group)) http.Handler {
 	mux := http.NewServeMux()
 	routes := httpapi.NewGroup(mux, logger)
 
@@ -112,6 +136,10 @@ func newRouter(cfg *config.Config, logger *slog.Logger, version string, checker 
 	routes.Handle("GET /livez", checker.Live())
 	routes.Handle("GET /readyz", checker.Ready())
 	routes.HandleFunc("GET /info", infoHandler(cfg, logger, version))
+
+	for _, register := range moduleRoutes {
+		register(routes)
+	}
 
 	// The global stack wraps the mux rather than each route, so it also covers
 	// the requests that match no route at all. Applying it per-route instead
@@ -167,3 +195,23 @@ func infoHandler(cfg *config.Config, logger *slog.Logger, version string) httpap
 		return nil
 	}
 }
+
+// module:auth begin
+
+// whoamiHandler is the example authenticated route: it reports the Principal
+// that auth.Require put on the request. Routes that need the caller read it the
+// same way, through auth.FromContext.
+func whoamiHandler(logger *slog.Logger) httpapi.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) error {
+		p, ok := auth.FromContext(r.Context())
+		if !ok {
+			// Only reachable if the route is mounted outside Require, which is
+			// a wiring bug, so it is a 500 rather than a 401.
+			return errors.New("whoami reached without auth.Require")
+		}
+		respond.JSON(w, logger, http.StatusOK, p)
+		return nil
+	}
+}
+
+// module:auth end

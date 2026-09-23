@@ -37,19 +37,29 @@ process.
 | **Middleware** | Recover, request ID, security headers, body limit, access log. |
 | **Health** | `/livez` and `/readyz`, with pluggable readiness checks. |
 | **Database** | Postgres through a pgx pool, goose migrations embedded and applied at startup under an advisory lock. <!-- module:postgres --> |
-| **Cache** | A three-method `Cache` interface, backed by Redis or an in-process map, both held to one contract test. <!-- module:cache --> |
+| **Cache** | A `Cache` interface — get, set with a ttl, delete — backed by Redis or an in-process map, both held to one contract test. <!-- module:cache --> |
+| **Auth** | API keys as bearer tokens, stored only as SHA-256: from config always, and from a revocable Postgres table when that module is kept. <!-- module:auth --> |
 | **Shutdown** | Signal, drain in-flight requests, force-close on a second signal. |
 | **Tooling** | `make verify`, golangci-lint, GitHub Actions, multi-stage Dockerfile. |
 
-Every direct dependency is confined to one package, and everything else is the
+Every direct dependency is set up in one package, and everything else is the
 standard library:
 
 - **Viper**, in `internal/config/load.go`
 - **pgx and goose**, in `internal/postgres` <!-- module:postgres -->
 - **go-redis**, in `internal/cache` <!-- module:cache -->
 
-Confinement is what makes each one replaceable: the rest of the program sees
-what the package returns, never the library that produced it.
+That is what makes each one replaceable. Viper never reaches the rest of the
+program, which sees only a typed `Config`.
+<!-- module:cache begin -->
+Likewise go-redis, behind `cache.Cache`.
+<!-- module:cache end -->
+<!-- module:postgres begin -->
+pgx is the deliberate exception: code that queries the database takes a
+`*pgxpool.Pool` and writes SQL, because an interface over a database is the
+abstraction every caller pays for and almost no service swaps. See
+`docs/decisions.md`.
+<!-- module:postgres end -->
 
 ## Why stdlib and not a framework
 
@@ -70,9 +80,9 @@ code across five files — and the composability is kept:
 func (h *Handler) GetUser(w http.ResponseWriter, r *http.Request) error {
     user, err := h.store.User(r.Context(), r.PathValue("id"))
     if err != nil {
-        // store.ErrNotFound becomes a 404 through one case in respond's
-        // asError, not a check repeated here; anything unrecognized becomes a
-        // 500 whose cause is logged, never sent.
+        // store.ErrNotFound becomes a 404 once you add one case for it to
+        // respond's asError, rather than a check repeated in every handler;
+        // anything unrecognized becomes a 500 whose cause is logged, never sent.
         return err
     }
 
@@ -146,6 +156,8 @@ internal/middleware/     recover, request ID, security headers, body limit, log
 internal/health/         liveness and readiness with registered checks
 internal/postgres/       pgx pool, embedded goose migrations         # module:postgres
 internal/cache/          Cache interface; Redis and in-memory        # module:cache
+internal/auth/           API-key middleware and key stores           # module:auth
+cmd/apikey/              generate a key and print what to store      # module:auth
 internal/requestid/      the correlation ID's context key
 compose.yaml             local Postgres and Redis for `make run`     # module:postgres+cache
 ```
@@ -157,6 +169,7 @@ compose.yaml             local Postgres and Redis for `make run`     # module:po
 | GET | `/livez` | Liveness. Consults nothing — it answers "is this process working?" |
 | GET | `/readyz` | Readiness. Runs every registered check; 503 if any fails. |
 | GET | `/info` | Name, version, environment, uptime. |
+| GET | `/v1/whoami` | The caller's identity. Needs `Authorization: Bearer <key>`; the example protected route. <!-- module:auth --> |
 
 Liveness and readiness are kept apart deliberately. A liveness probe that
 consults the database restarts every instance of the service when the database
@@ -191,6 +204,7 @@ rather than aspirational. `docs/decisions.md` has the reasoning and the instruct
 | The error envelope | `internal/httpapi/respond/respond.go` |
 | The database driver or migration tool | `internal/postgres/` and its block in `app.Run` <!-- module:postgres --> |
 | The cache backend (Memcached, a managed service) | one new implementation of `cache.Cache` <!-- module:cache --> |
+| API keys for JWT or OIDC | a middleware that sets `auth.Principal`, in place of `auth.Require` <!-- module:auth --> |
 
 ## Modules
 
@@ -210,12 +224,9 @@ fork broken fails here first.
 
 - **postgres** — the pgx pool, migrations, and its compose service and integration tests <!-- module:postgres -->
 - **cache** — the `Cache` interface, Redis and in-memory backends, and Redis's compose service <!-- module:cache -->
+- **auth** — API-key middleware, `/v1/whoami`, `cmd/apikey`; its Postgres key table goes with either module <!-- module:auth -->
 
-## Not included yet
-
-- **Auth** — API keys, backed by Postgres when it is present and config when not
-
-It will land as a module.
+## Not included
 
 **Rate limiting is left out on purpose.** An in-process limiter counts per
 instance, so three instances allow three times the limit and nothing says so.

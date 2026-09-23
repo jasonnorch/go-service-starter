@@ -25,6 +25,7 @@ var configEnvPrefixes = []string{
 	"LOG_",
 	"POSTGRES_", // module:postgres
 	"CACHE_",    // module:cache
+	"AUTH_",     // module:auth
 }
 
 // isolate removes every input Load reads except the embedded defaults: the

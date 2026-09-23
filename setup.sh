@@ -149,17 +149,21 @@ git rev-parse --is-inside-work-tree >/dev/null 2>&1 ||
 #   a+b   removed when ALL of them are gone — something they share, like
 #         compose.yaml's header or `make up`, which outlives any one of them
 # "Gone" counts modules removed on an earlier run as well as this one. A file
-# that removal leaves empty is deleted. The comment can be //, # or <!--.
+# that removal leaves empty is deleted, along with its directory if that is
+# now empty too — which is how a file wholly marked a,b goes with either
+# module without appearing in any module's paths. The comment can be //, #,
+# <!-- or SQL's --.
 #
 # module_paths is the other half: the files that are the module outright. Only
 # their tracked files are deleted. Adding a module means a case here, a name in
 # KNOWN_MODULES, and markers on everything outside these paths that mentions it.
-KNOWN_MODULES=postgres,cache
+KNOWN_MODULES=postgres,cache,auth
 
 module_paths() {
 	case $1 in
 	postgres) echo internal/postgres ;;
 	cache) echo internal/cache ;;
+	auth) echo internal/auth cmd/apikey ;;
 	*) return 1 ;;
 	esac
 }
@@ -188,7 +192,7 @@ for my $file (@ARGV) {
 	my ($skip, $changed) = (0, 0);
 	while (my $line = <$in>) {
 		my $n = $.;
-		if ($line =~ m{(?://|\#|<!--)\s*module:([a-z][a-z,+]*)(?:\s+(begin|end)\b)?}) {
+		if ($line =~ m{(?://|\#|<!--|--)\s*module:([a-z][a-z,+]*)(?:\s+(begin|end)\b)?}) {
 			my ($names, $kind) = ($1, $2 // 'line');
 			if ($names =~ /,/ && $names =~ /\+/) {
 				warn "$file:$n: \"module:$names\" mixes , and + — use one\n";
@@ -248,6 +252,9 @@ for my $file (sort keys %out) {
 		# the last service is gone. An empty file left behind is just noise.
 		unlink $file or die "deleting $file: $!\n";
 		print "$file\n";
+		# rmdir fails, harmlessly, on a directory that still has files.
+		(my $dir = $file) =~ s{/[^/]*$}{};
+		rmdir $dir if $dir ne $file;
 		next;
 	}
 	open my $o, '>', $file or die "writing $file: $!\n";
@@ -263,7 +270,7 @@ PERL
 # only tracked files are ever touched. With no marked files, perl runs with no
 # arguments and does nothing; the program never reads stdin.
 markers() {
-	{ git grep -lzE '(//|#|<!--)[[:space:]]*module:[a-z]' -- . ':!setup.sh' || true; } |
+	{ git grep -lzE '(//|#|<!--|--)[[:space:]]*module:[a-z]' -- . ':!setup.sh' || true; } |
 		MARKERS_MODE=$1 MARKERS_GONE=${2:-} MARKERS_KNOWN=$KNOWN_MODULES \
 			xargs -0 perl -e "$MARKERS_PROGRAM"
 }
@@ -291,7 +298,7 @@ has_paths() { [ "$(path_state "$1")" != none ]; }
 # an all-of (+) marker outlives the module by design, so its presence says
 # nothing about whether this one is still here.
 has_markers() {
-	git grep -qE "(//|#|<!--)[[:space:]]*module:([a-z]+,)*$1(,[a-z]+)*([^a-z,+]|\$)" -- . ':!setup.sh'
+	git grep -qE "(//|#|<!--|--)[[:space:]]*module:([a-z]+,)*$1(,[a-z]+)*([^a-z,+]|\$)" -- . ':!setup.sh'
 }
 present() { has_paths "$1" || has_markers "$1"; }
 
@@ -475,10 +482,14 @@ command -v go >/dev/null 2>&1 || die "Go is not installed — install it and run
 # inside it would survive, orphaned, and likely still import the dependency
 # being removed. Refuse rather than leave that behind or delete something git
 # cannot give back.
+#
+# Ignored files count too, which is why there is no --exclude-standard. A
+# coverage.out or .DS_Store would keep the directory from being deleted, and
+# the recheck would then fail after files were already gone.
 for m in $(printf '%s' "$REMOVE" | tr ',' ' '); do
 	# shellcheck disable=SC2046
-	stray=$(git ls-files --others --exclude-standard -- $(module_paths "$m"))
-	[ -z "$stray" ] || die "untracked files inside module $m — move or commit them first; nothing was written:
+	stray=$(git ls-files --others -- $(module_paths "$m"))
+	[ -z "$stray" ] || die "untracked or ignored files inside module $m — move or delete them first; nothing was written:
 $stray"
 done
 

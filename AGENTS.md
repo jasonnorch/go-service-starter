@@ -27,6 +27,8 @@ internal/middleware/       recover, request ID, security headers, body limit, lo
 internal/health/           liveness and readiness with registered checks
 internal/postgres/         pgx pool, embedded goose migrations   # module:postgres
 internal/cache/            Cache interface; Redis and in-memory  # module:cache
+internal/auth/             API-key middleware and key stores     # module:auth
+cmd/apikey/                generate a key, print what to store   # module:auth
 internal/requestid/        the correlation ID's context key
 docs/decisions.md          why each opinion is what it is, and how to swap it
 config.example.yaml        symlink to internal/config/defaults.yaml — never a copy

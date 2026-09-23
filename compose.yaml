@@ -7,6 +7,10 @@
 # the file goes when the last of them does. The credentials match the defaults
 # in internal/config/defaults.yaml. They are for these local containers only;
 # production rejects those defaults.
+#
+# Ports are published on 127.0.0.1 only. Without a host address, Docker listens
+# on every interface and its rules bypass host firewalls such as ufw, so anyone
+# on the same network could reach a database whose password is in this repo.
 services:
   # module:postgres begin
   postgres:
@@ -16,10 +20,13 @@ services:
       POSTGRES_PASSWORD: app
       POSTGRES_DB: app
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     healthcheck:
       # `make up` waits on this, so a test run never races the server's startup.
-      test: ["CMD-SHELL", "pg_isready -U app -d app"]
+      # Over TCP (-h), not the socket: on first start the image runs a
+      # temporary socket-only server to initialize the database, and a socket
+      # check would report ready before the real one is listening.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U app -d app"]
       interval: 2s
       timeout: 3s
       retries: 15
@@ -29,7 +36,7 @@ services:
   redis:
     image: redis:8-alpine
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 2s

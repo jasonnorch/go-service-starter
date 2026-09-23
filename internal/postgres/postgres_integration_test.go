@@ -73,12 +73,14 @@ func isolatedURL(t *testing.T) string {
 	return u.String()
 }
 
+// cfgFor does not migrate on open: tests that migrate their own filesystem
+// would otherwise collide with the embedded migrations' version numbers, and
+// goose would skip theirs as already applied.
 func cfgFor(u string) config.Postgres {
 	return config.Postgres{
 		URL:            config.Secret(u),
 		MaxConns:       4,
 		ConnectTimeout: 10 * time.Second,
-		MigrateOnStart: true,
 	}
 }
 
@@ -91,11 +93,11 @@ DROP TABLE widgets;
 `)},
 }
 
-// A fresh fork has an empty migrations directory. Open has to treat that as
-// nothing to do, not as a failure, or the service cannot start until someone
-// writes a migration it does not need.
-func TestOpenStartsWithNoMigrations(t *testing.T) {
-	pool, err := postgres.Open(context.Background(), cfgFor(isolatedURL(t)), discard())
+// Open with the service's own embedded migrations, as production runs it.
+func TestOpenAppliesTheEmbeddedMigrations(t *testing.T) {
+	cfg := cfgFor(isolatedURL(t))
+	cfg.MigrateOnStart = true
+	pool, err := postgres.Open(context.Background(), cfg, discard())
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -103,6 +105,21 @@ func TestOpenStartsWithNoMigrations(t *testing.T) {
 
 	if err := pool.Ping(context.Background()); err != nil {
 		t.Errorf("Ping after Open: %v", err)
+	}
+}
+
+// A fork without the auth module has no migrations at all. Migrate has to
+// treat that as nothing to do, not as a failure, or the service cannot start
+// until someone writes a migration it does not need.
+func TestMigrateWithNoMigrationsIsANoOp(t *testing.T) {
+	pool, err := postgres.Open(context.Background(), cfgFor(isolatedURL(t)), discard())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer pool.Close()
+
+	if err := postgres.Migrate(context.Background(), pool, fstest.MapFS{}, discard()); err != nil {
+		t.Errorf("Migrate with no migrations: %v", err)
 	}
 }
 

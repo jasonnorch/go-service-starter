@@ -105,3 +105,13 @@ cache:
   # How long startup waits to reach Redis before giving up.
   connect_timeout: 5s
 # module:cache end
+
+# module:auth begin
+auth:
+  # API keys allowed from configuration, as "name=sha256hex", comma-separated.
+  # Only hashes live here; `go run ./cmd/apikey -name <name>` generates a key
+  # and prints its entry. Empty means no key is allowed from config — with the
+  # postgres module, keys can still come from its api_keys table. Set AUTH_KEYS
+  # in production.
+  keys: ""
+# module:auth end

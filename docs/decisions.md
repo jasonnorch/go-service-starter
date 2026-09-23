@@ -189,13 +189,26 @@ not only on day one.
 **Why markers, not a list of line numbers or patterns.** The marker sits on the
 line it governs, so moving, reformatting or editing that line carries the
 marker with it. There are two forms: a marker on a line removes that line, and
-a begin/end pair removes a block. A line that needs two modules names both,
-comma-separated, and goes when either does. That is how the Postgres-backed
-half of a feature disappears with Postgres as well as with the feature. The
-comment character is whatever the file uses (`//`, `#`, `<!-- -->`), so Go,
-YAML, the Makefile, CI and Markdown are all marked the same way. HTML comments
-are invisible when Markdown renders. Plain-text code blocks show the marker,
-which at least tells the reader the line is removable.
+a begin/end pair removes a block. A marker can name several modules, joined in
+one of two ways:
+
+- **`a,b` goes when either module does.** That is how the Postgres-backed half
+  of auth disappears with Postgres as well as with auth.
+- **`a+b` goes only once every named module is gone,** counting modules
+  removed on earlier runs. It is for things the modules share: `compose.yaml`'s
+  header and `make up` must outlive either of Postgres and Redis, and go with
+  the last of them.
+
+A file that removal leaves empty is deleted, along with its directory if that
+empties too. That is how a file marked from its first line to its last, like
+`pgstore` or the `api_keys` migration, goes without appearing in any module's
+list of paths. The comment character is whatever the file uses (`//`, `#`,
+`<!-- -->`, SQL's `--`), so Go, YAML, the Makefile, CI, SQL and Markdown are
+all marked the same way. HTML comments are invisible when Markdown renders.
+Plain-text code blocks show the marker, which at least tells the reader the
+line is removable. In a Makefile, never put a line marker on a variable
+assignment: make keeps the space before a trailing comment as part of the
+value.
 
 **Why it is tested on every pull request.** A removal is only as good as its
 markers, and a missed one — an unmarked import, a test fixture still naming a
@@ -263,7 +276,8 @@ fails its probes.
 
 **The decision.** The service has a Postgres pool, opened in `app.Run` from
 `internal/postgres`, with schema migrations embedded in the binary and applied
-at startup by goose. pgx and goose are imported nowhere else.
+at startup by goose. goose is imported nowhere else. pgx is configured nowhere
+else, but code that queries takes the `*pgxpool.Pool` directly (see below).
 
 **Why include a database at all.** An earlier version left Postgres out on the
 grounds that "everyone's version differs". For a Go HTTP service that is mostly
@@ -325,8 +339,11 @@ Docker locally and a service container in CI.
 **To swap it.** A different migration tool means rewriting `Migrate` and
 renaming the migration files. A different driver means rewriting `Open` and
 the code that takes the pool. A different database means `internal/postgres`,
-the block in `app.Run`, the `postgres` section of the config, and
-`compose.yaml`. Nothing else imports any of them. To drop Postgres entirely,
+the block in `app.Run`, the `postgres` section of the config,
+`compose.yaml`, every store that queries the pool (today,
+`internal/auth/pgstore`), and the two places integration tests find a
+database: `POSTGRES_URL` in the Makefile's `test-integration` target, and the
+`postgres` service in the CI integration job. To drop Postgres entirely,
 `./setup.sh --without postgres`.
 
 ---
@@ -384,6 +401,60 @@ caching entirely, `./setup.sh --without cache`.
 ---
 <!-- module:cache end -->
 
+<!-- module:auth begin -->
+## API keys, from config and the database
+
+**The decision.** Requests authenticate with `Authorization: Bearer <key>`.
+`auth.Require` hashes the key and looks the hash up in a `KeyStore`, then puts
+an `auth.Principal` on the context. Keys come from `auth.keys` in config, and
+also, when the postgres module is kept, from an `api_keys` table. `/v1/whoami`
+is the example protected route. `/livez`, `/readyz` and `/info` stay public.
+
+**Why API keys.** They are the simplest scheme that is correct for what a
+service like this usually serves: other services and scripts. There are no
+sessions, no token refresh, and no identity provider to run. JWT or OIDC is
+the right answer for end users, and that swap is designed in (see below).
+
+**Why only hashes are stored.** A key is 32 random bytes, so its SHA-256 is as
+good as a password hash without the cost of one: there is no dictionary to try
+and nothing to salt. A leaked config file or database dump reveals no usable
+key. `cmd/apikey` prints a key once, with the line to store, and the key
+cannot be recovered afterwards. Keys start with `sk_`, so one that leaks into
+a log or a commit is recognizable to a human and to secret scanners.
+
+**Why config and the database, and config first.** The database is where keys
+are issued and revoked at runtime. Config is where the first key comes from,
+since an empty table admits nobody, and where an operator's break-glass key
+lives if the database is down. `auth.Stores` tries config first. A store that
+errors fails the lookup rather than falling through: a database that cannot
+answer must not make a revoked key look merely unknown to the next store.
+`auth.keys` is one `name=sha256hex,...` string rather than a YAML list, so the
+whole set fits in a single `AUTH_KEYS` environment variable.
+
+**Why every bad key gets the same 401.** Missing, malformed, unknown and
+revoked keys produce an identical body and a `WWW-Authenticate` header. A
+caller probing keys learns nothing from which failure it got. A store failure
+is a 500, because telling a legitimate client its key is bad when the database
+is down sends them looking for the wrong problem.
+
+**How it fits the module system.** `pgstore`, its test and its migration are
+each marked `module:postgres,auth` from first line to last, so removing either
+module empties them, and emptied files are deleted. With postgres removed,
+`app.Run` is left with the config store alone. That is the "database if you
+have one, config if you don't" behavior, produced by deletion rather than by a
+runtime branch.
+
+**What it costs.** No new dependency. A `/v1` route group that forks will
+replace with their own routes.
+
+**To swap it.** Everything after `Require` reads only `auth.Principal`. JWT or
+OIDC is a new middleware that validates the token and sets the same
+`Principal`, mounted where `Require` is. No handler changes. To drop auth
+entirely, `./setup.sh --without auth`.
+
+---
+<!-- module:auth end -->
+
 ## Load-bearing details that look removable
 
 ### The embedded defaults must list every key
@@ -429,8 +500,9 @@ channel discards exactly the signal that matters most.
 ### Tests isolate the environment, not just the filesystem
 
 `internal/config`'s tests move the working directory so a stray `config.yaml`
-cannot reach them, and clear every `SERVICE_*`, `SERVER_*`, `LOG_*` and
-`CONFIG_FILE` variable inherited from the shell or the CI image. The first
+cannot reach them, and clear `CONFIG_FILE` and every variable under a config
+section's prefix (`configEnvPrefixes` in `load_test.go`, one entry per
+top-level section) inherited from the shell or the CI image. The first
 version did only the former, and `SERVER_PORT=31337 go test ./internal/config/`
 failed on the developer's machine while passing everywhere else — the same
 "a test reads the machine it runs on" failure this package was written to avoid,
