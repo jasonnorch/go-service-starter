@@ -7,16 +7,18 @@ observability — and deliberately swappable in the places where opinions differ
 ```sh
 git clone https://github.com/jasonnorch/go-service-starter yourthing
 cd yourthing
-./setup.sh github.com/you/yourthing
+./setup.sh github.com/you/yourthing     # add --without postgres to drop it
 make verify
-make up && make run     # up starts Postgres in Docker; the service needs it
+make up     # module:postgres — starts Postgres in Docker; the service needs it
+make run
 ```
 
 `./setup.sh` is the one step that is not `make`, and you run it once. It
 rewrites the module path through every import, sets the service name that shows
-up in your logs and in `/info`, and then runs `go build ./...` so it cannot
-report success on a tree that no longer compiles. It never prompts and deletes
-nothing — your git history and remotes are left alone — and running it a second
+up in your logs and in `/info`, removes any [modules](#modules) you name with
+`--without`, and then runs `go build` and `go vet` so it cannot report success
+on a tree that no longer compiles. It never prompts, deletes only the modules
+you name, and leaves your git history and remotes alone. Running it a second
 time is a no-op, so a typo costs you a re-run and nothing else.
 
 `make verify` passes on a fresh clone with no config file, no environment
@@ -34,15 +36,18 @@ process.
 | **Errors** | One JSON envelope for every failure, including 404 and 405. |
 | **Middleware** | Recover, request ID, security headers, body limit, access log. |
 | **Health** | `/livez` and `/readyz`, with pluggable readiness checks. |
-| **Database** | Postgres through a pgx pool, goose migrations embedded and applied at startup under an advisory lock. |
+| **Database** | Postgres through a pgx pool, goose migrations embedded and applied at startup under an advisory lock. <!-- module:postgres --> |
 | **Shutdown** | Signal, drain in-flight requests, force-close on a second signal. |
 | **Tooling** | `make verify`, golangci-lint, GitHub Actions, multi-stage Dockerfile. |
 
-Three direct dependencies, each confined to one package: Viper to
-`internal/config/load.go`, and pgx and goose to `internal/postgres`. Everything
-else is the standard library. Confinement is what makes each one replaceable —
-the rest of the program sees a typed `Config` and a `*pgxpool.Pool`, never the
-library that produced them.
+Every direct dependency is confined to one package, and everything else is the
+standard library:
+
+- **Viper**, in `internal/config/load.go`
+- **pgx and goose**, in `internal/postgres` <!-- module:postgres -->
+
+Confinement is what makes each one replaceable: the rest of the program sees
+what the package returns, never the library that produced it.
 
 ## Why stdlib and not a framework
 
@@ -137,9 +142,9 @@ internal/httpapi/respond/ the error type and every response written
 internal/httpapi/decode/ JSON request bodies, with errors that say what to fix
 internal/middleware/     recover, request ID, security headers, body limit, log
 internal/health/         liveness and readiness with registered checks
-internal/postgres/       pgx pool, embedded goose migrations
+internal/postgres/       pgx pool, embedded goose migrations         # module:postgres
 internal/requestid/      the correlation ID's context key
-compose.yaml             local Postgres for `make run` and integration tests
+compose.yaml             local Postgres for `make run`, integration  # module:postgres
 ```
 
 ## Endpoints
@@ -159,10 +164,11 @@ blips, turning a recovered dependency into a cold start of the whole fleet.
 | | |
 |---|---|
 | `make verify` | The one that answers "did it work?": gofmt, tidy, vet, lint, `go test -race`. |
-| `make up` / `make down` | Start and stop Postgres in Docker. `make run` needs it. |
+| `make up` / `make down` | Start and stop Postgres in Docker. `make run` needs it. <!-- module:postgres --> |
 | `make run` | Build and run. |
 | `make test` | Tests with the race detector. No containers, no network. |
-| `make test-integration` | Tests against the real Postgres; starts it first. |
+| `make test-integration` | Tests against the real Postgres; starts it first. <!-- module:postgres --> |
+| `make verify-without` | Removes each module in a scratch copy and verifies what is left. |
 | `make lint` | golangci-lint over the whole tree. |
 | `make deps` | Upgrade dependencies and tidy. |
 
@@ -180,14 +186,32 @@ rather than aspirational. `docs/decisions.md` has the reasoning and the instruct
 | The log backend (zap, ECS, OTel) | `internal/logging/logging.go` — one `slog.Handler` |
 | The config loader (koanf, envconfig) | `internal/config/load.go` — the only Viper import |
 | The error envelope | `internal/httpapi/respond/respond.go` |
-| The database driver or migration tool | `internal/postgres/` and its block in `app.Run` |
+| The database driver or migration tool | `internal/postgres/` and its block in `app.Run` <!-- module:postgres --> |
+
+## Modules
+
+Some parts of the starter are modules: a package plus the lines of wiring,
+config, CI and docs that exist only for it, each marked with a `module:` comment.
+They are here because most services need them; if yours does not, remove one:
+
+```sh
+./setup.sh --modules                  # list the modules still in the tree
+./setup.sh --without postgres         # remove one, at setup or any time after
+```
+
+Removal deletes the package and every marked line, tidies `go.mod`, and proves
+the result still builds and vets. CI removes each module in a scratch copy on
+every pull request (`make verify-without`), so a removal that would leave a
+fork broken fails here first.
+
+- **postgres** — the pgx pool, migrations, `compose.yaml` and the integration tests <!-- module:postgres -->
 
 ## Not included yet
 
 - **Redis** — a `Cache` interface with Redis and in-memory implementations
 - **Auth** — API keys, backed by Postgres when it is present and config when not
 
-Each lands as its own package plus one block in `app.Run`, the way Postgres did.
+Each will land as a module.
 
 **Rate limiting is left out on purpose.** An in-process limiter counts per
 instance, so three instances allow three times the limit and nothing says so.

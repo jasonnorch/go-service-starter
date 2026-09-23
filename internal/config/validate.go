@@ -48,6 +48,7 @@ func (c *Config) Validate() error {
 			FormatText, FormatJSON, c.Log.Format))
 	}
 
+	// module:postgres begin
 	switch {
 	case !c.Postgres.URL.IsSet():
 		errs = append(errs, errors.New("postgres.url: must not be empty"))
@@ -61,6 +62,7 @@ func (c *Config) Validate() error {
 		errs = append(errs, fmt.Errorf("postgres.max_conns: must be at least 1, got %d", c.Postgres.MaxConns))
 	}
 	errs = append(errs, positiveDuration("postgres.connect_timeout", c.Postgres.ConnectTimeout))
+	// module:postgres end
 
 	// errors.Join drops nils, so the unconditional appends above cost nothing
 	// and it returns nil when every check passed.

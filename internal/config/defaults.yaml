@@ -70,6 +70,7 @@ log:
   # noisy and measurably slower in production.
   add_source: false
 
+# module:postgres begin
 postgres:
   # A libpq connection string. The default is the database compose.yaml runs
   # (`make up`); production rejects it, so set POSTGRES_URL there. The password
@@ -89,3 +90,4 @@ postgres:
   # rest wait for it, polling every 5s. Turn off if migrations run as a
   # separate deploy step.
   migrate_on_start: true
+# module:postgres end

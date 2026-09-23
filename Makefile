@@ -4,7 +4,8 @@ APP_NAME := go-service-starter
 BUILD_DIR := bin
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
-.PHONY: all build clean deps lint verify test test-integration run up down
+.PHONY: all build clean deps lint verify verify-without test run
+.PHONY: test-integration up down # module:postgres
 
 all: verify build
 
@@ -24,6 +25,7 @@ deps:
 test:
 	go test -race -count=1 ./...
 
+# module:postgres begin
 # The containers in compose.yaml. --wait blocks until their healthchecks pass,
 # so whatever runs next never races a database that is still starting.
 up:
@@ -38,6 +40,7 @@ down:
 POSTGRES_URL ?= postgres://app:app@localhost:5432/app?sslmode=disable
 test-integration: up
 	POSTGRES_URL='$(POSTGRES_URL)' go test -race -count=1 -tags integration ./...
+# module:postgres end
 
 # golangci-lint defaults to reporting at most 50 issues per linter and 3 per
 # identical message, silently. Turning both off matters more than it sounds: a
@@ -96,5 +99,45 @@ verify:
 		printf "\033[32m✓ verify passed\033[0m\n"; \
 	else \
 		printf "\033[31m✗ verify failed\033[0m\n"; \
+		exit 1; \
+	fi
+
+# Removes each module with `./setup.sh --without`, one at a time and then all
+# together, in a scratch copy of the tree, and checks that what remains passes
+# what the fork's own `make verify` would: gofmt, setup.sh --check, vet, lint
+# and tests. This is what makes --without trustworthy — every removal a fork
+# can make is exercised here first, rather than in the fork.
+#
+# It copies the working tree, uncommitted changes included, so it tests what is
+# on disk. It is separate from verify only because it is slower; CI runs it on
+# every pull request. Asking setup.sh which modules are present, rather than
+# listing them here, keeps it correct in a fork that has already removed some.
+verify-without:
+	@modules="$$(./setup.sh --modules)"; \
+	if [ -z "$$modules" ]; then echo "no modules to remove"; exit 0; fi; \
+	runs="$$modules"; \
+	if [ "$$(printf '%s\n' "$$modules" | wc -l)" -gt 1 ]; then \
+		runs="$$runs $$(printf '%s' "$$modules" | tr '\n' ',')"; \
+	fi; \
+	failed=0; \
+	for m in $$runs; do \
+		printf '\033[2m→ without %s\033[0m\n' "$$m"; \
+		dir="$$(mktemp -d)"; \
+		cp -R . "$$dir/repo"; \
+		( cd "$$dir/repo" && \
+		  git add -A && \
+		  git -c user.name=verify -c user.email=verify@localhost commit -q --allow-empty -m 'verify-without snapshot' && \
+		  ./setup.sh --without "$$m" >/dev/null && \
+		  unformatted="$$(gofmt -l .)" && \
+		  { [ -z "$$unformatted" ] || { printf 'needs gofmt:\n%s\n' "$$unformatted"; false; }; } && \
+		  ./setup.sh --check >/dev/null && \
+		  golangci-lint run $(LINT_FLAGS) ./... >/dev/null && \
+		  go test -race -count=1 ./... >/dev/null \
+		) || { printf '\033[31m✗ without %s\033[0m\n' "$$m"; failed=1; }; \
+		rm -rf "$$dir"; \
+	done; \
+	if [ $$failed -eq 0 ]; then \
+		printf "\033[32m✓ every removal verified\033[0m\n"; \
+	else \
 		exit 1; \
 	fi
