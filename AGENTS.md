@@ -59,9 +59,9 @@ Four properties it guarantees, so there is no need to hedge around it:
 - **It is idempotent.** Run against a module that already matches, it prints
   `already <module>` and exits 0. When it is unclear whether a repo has been
   set up, running it is the cheapest way to find out.
-- **It checks before it writes.** Every substitution is matched, and Go is
-  confirmed installed, before any file is touched, so those failures leave the
-  tree as it was. Once writing starts, every write is rechecked and the result
+- **It checks before it writes.** Every substitution is matched, Go is
+  confirmed installed, and the tracked tree must have no uncommitted changes
+  before any file is touched, so those failures leave the tree as it was. Once writing starts, every write is rechecked and the result
   is built; a failure there keeps the rename and the error says so, and
   `git restore .` undoes it, because only tracked files are ever written.
   Either way, read the error and stop rather than working around it.

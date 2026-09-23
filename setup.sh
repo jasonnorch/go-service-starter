@@ -34,9 +34,10 @@ Behavior worth relying on:
                     else. Your git history and remotes are left alone.
   Idempotent        Running it when the module already matches is a no-op that
                     exits 0, so a re-run after a failure is always safe.
-  Checked first     Every substitution is checked, and Go is confirmed
-                    installed, before any file is written. If either fails,
-                    nothing is written.
+  Checked first     Every substitution is checked, Go is confirmed installed,
+                    and tracked files must have no uncommitted changes, before
+                    any file is written. If any of these fails, nothing is
+                    written.
 
 `--check` verifies that every substitution below still matches something and
 writes nothing. `make verify` runs it, so a reformatted Makefile or a
@@ -173,7 +174,7 @@ anchor() {
 	else
 		# Collected rather than fatal, so a failed write reaches the recheck
 		# below and its undo hint instead of exiting with the tree half-renamed.
-		perl -pi -e "s/$_pattern/$_replacement/" "$_file" ||
+		perl -Mwarnings=FATAL,inplace -pi -e "s/$_pattern/$_replacement/" "$_file" ||
 			FAILED="$FAILED\n  $_file — write failed"
 	fi
 }
@@ -215,6 +216,13 @@ fi
 # untouched rather than renamed and unverified.
 command -v go >/dev/null 2>&1 || die "Go is not installed — install it and run setup.sh again; nothing was written"
 
+# Every failure past this point says `git restore .` undoes it. That is only
+# true, and only safe to follow, when the tracked tree held nothing but the
+# template: run on uncommitted edits, it would discard them along with the rename.
+# Untracked files are never written, so they do not count.
+[ -z "$(git status --porcelain --untracked-files=no)" ] ||
+	die "tracked files have uncommitted changes — commit or stash them first; nothing was written"
+
 # The module path is unambiguous enough to replace everywhere it appears, which
 # is the one substitution that does not need an anchor. git grep rather than
 # grep -r: an untracked note or local config that mentions the path is not the
@@ -224,19 +232,22 @@ REWRITTEN=$(git grep -lF "$OLD_MODULE" | wc -l | tr -d ' ')
 
 UNDO="the rename is left in place; \`git restore .\` undoes it"
 
+# FATAL,inplace: by default perl -pi only warns when it cannot write a file and
+# exits 0, so the skip would be silent. Fatal, it exits non-zero and xargs does
+# too. That matters most for files go build never compiles — a _test.go, a doc.
 # shellcheck disable=SC2016
-git grep -lzF "$OLD_MODULE" | xargs -0 perl -pi -e 's{\Q$ENV{OLD_MODULE}\E}{$ENV{NEW_MODULE}}g' ||
+git grep -lzF "$OLD_MODULE" | xargs -0 perl -Mwarnings=FATAL,inplace -pi -e 's{\Q$ENV{OLD_MODULE}\E}{$ENV{NEW_MODULE}}g' ||
 	die "rewriting the module path failed — $UNDO"
 
 MODE=apply
 anchors
 
-# Recheck that every write landed. perl -pi only warns when it cannot write a
-# file and still exits 0, so a read-only README would otherwise be skipped, the
-# build would pass, and the script would report a rename that is not complete.
-# Running the check pass with the new name as the old one asserts each anchor
-# now carries it; go.mod stands in for the module rewrite, and go build checks
-# the imports.
+# Recheck that every write landed. The fatal warning above catches a write perl
+# could not make; this catches one that was made and did not say what it should.
+# Before either existed, an unwritable file was skipped silently and the script
+# reported a complete rename. Running the check pass with the new name as the
+# old one asserts each anchor now carries it; go.mod stands in for the module
+# rewrite, and go build checks the imports.
 OLD_NAME=$NEW_NAME
 MODE=check
 anchors
