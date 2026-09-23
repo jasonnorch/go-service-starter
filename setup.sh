@@ -34,15 +34,18 @@ Behavior worth relying on:
                     else. Your git history and remotes are left alone.
   Idempotent        Running it when the module already matches is a no-op that
                     exits 0, so a re-run after a failure is always safe.
-  All-or-nothing    Every substitution is checked before any is applied. If one
-                    no longer matches, nothing is written.
+  Checked first     Every substitution is checked, and Go is confirmed
+                    installed, before any file is written. If either fails,
+                    nothing is written.
 
 `--check` verifies that every substitution below still matches something and
 writes nothing. `make verify` runs it, so a reformatted Makefile or a
 re-indented defaults.yaml fails here rather than in someone's fork.
 
 Exit codes: 0 on success, including "already set up". 1 on any failure, with
-the tree left as it was.
+the tree left as it was, except one: if `go build` fails after the rename, the
+rename is kept so the compile error can be read against it. `git restore .`
+undoes it, since only tracked files were written.
 USAGE
 }
 
@@ -77,6 +80,18 @@ if [ "${1:-}" = "--check" ]; then
 	shift
 fi
 
+# Exactly one module path, or nothing after --check. A stray argument is refused
+# rather than ignored: `./setup.sh github.com/you/x --check` reads like a check,
+# and silently running the rename instead is the worst way to resolve it.
+if [ $# -ne $((1 - CHECK_ONLY)) ]; then
+	usage >&2
+	exit 1
+fi
+
+# Only tracked files are rewritten, so git is both the file list and the undo.
+git rev-parse --is-inside-work-tree >/dev/null 2>&1 ||
+	die "not a git checkout — setup.sh rewrites tracked files, so it needs one"
+
 [ -f go.mod ] || die "no go.mod here — run this from a clone of the template"
 
 # Read the current path from go.mod rather than hardcoding it. That is what
@@ -90,7 +105,7 @@ if [ "$CHECK_ONLY" = 1 ]; then
 	# patterns without depending on a target module being supplied.
 	NEW_MODULE=$OLD_MODULE
 else
-	NEW_MODULE="${1:-}"
+	NEW_MODULE=$1
 	[ -n "$NEW_MODULE" ] || {
 		usage >&2
 		exit 1
@@ -119,6 +134,11 @@ module_name() {
 OLD_NAME=$(module_name "$OLD_MODULE")
 NEW_NAME=$(module_name "$NEW_MODULE")
 
+# Every value reaches perl through the environment, never spliced into the
+# program text, so the program is fixed and the names are data. Spliced in, a
+# `$&` or `@x` in a module path would be expanded by perl rather than written.
+export OLD_MODULE NEW_MODULE OLD_NAME NEW_NAME
+
 # Anchored, position-specific substitutions for the places that carry the bare
 # name rather than the module path.
 #
@@ -131,7 +151,8 @@ NEW_NAME=$(module_name "$NEW_MODULE")
 #
 # perl rather than `sed -i`: the backup-suffix argument must be empty on
 # BSD/macOS and absent on GNU, and there is no spelling that works on both.
-# \Q...\E quotes the name so a dot or dash in it stays literal.
+# The patterns are single-quoted perl that reads the names from $ENV;
+# \Q...\E quotes the old name so a dot or dash in it stays literal.
 FAILED=''
 MODE=check
 
@@ -152,22 +173,24 @@ anchor() {
 }
 
 # Both passes run the same list, so the check cannot drift from what is applied.
+# SC2016: the single quotes are the point — perl expands $ENV, the shell must not.
+# shellcheck disable=SC2016
 anchors() {
 	anchor Makefile \
-		"^APP_NAME := \\Q$OLD_NAME\\E\$" \
-		"APP_NAME := $NEW_NAME"
+		'^APP_NAME := \Q$ENV{OLD_NAME}\E$' \
+		'APP_NAME := $ENV{NEW_NAME}'
 	anchor internal/config/defaults.yaml \
-		"^  name: \\Q$OLD_NAME\\E\$" \
-		"  name: $NEW_NAME"
+		'^  name: \Q$ENV{OLD_NAME}\E$' \
+		'  name: $ENV{NEW_NAME}'
 	anchor README.md \
-		"^# \\Q$OLD_NAME\\E\\b" \
-		"# $NEW_NAME"
+		'^# \Q$ENV{OLD_NAME}\E\b' \
+		'# $ENV{NEW_NAME}'
 	anchor AGENTS.md \
-		"^# \\Q$OLD_NAME\\E\\b" \
-		"# $NEW_NAME"
+		'^# \Q$ENV{OLD_NAME}\E\b' \
+		'# $ENV{NEW_NAME}'
 	anchor .github/workflows/test.yml \
-		"-t \\Q$OLD_NAME\\E:ci\\b" \
-		"-t $NEW_NAME:ci"
+		'-t \Q$ENV{OLD_NAME}\E:ci\b' \
+		'-t $ENV{NEW_NAME}:ci'
 }
 
 anchors
@@ -182,23 +205,31 @@ if [ "$CHECK_ONLY" = 1 ]; then
 	exit 0
 fi
 
-# The module path is unambiguous enough to replace everywhere it appears, which
-# is the one substitution that does not need an anchor.
-FILES=$(grep -rl --binary-files=without-match --exclude-dir=.git --exclude-dir=bin \
-	-F "$OLD_MODULE" . || true)
-[ -n "$FILES" ] || die "no references to $OLD_MODULE found — is this a clone of the template?"
+# Checked before the first write, so a missing toolchain leaves the tree
+# untouched rather than renamed and unverified.
+command -v go >/dev/null 2>&1 || die "Go is not installed — install it and run setup.sh again; nothing was written"
 
-printf '%s\n' "$FILES" | xargs perl -pi -e "s{\\Q$OLD_MODULE\\E}{$NEW_MODULE}g"
+# The module path is unambiguous enough to replace everywhere it appears, which
+# is the one substitution that does not need an anchor. git grep rather than
+# grep -r: an untracked note or local config that mentions the path is not the
+# template's to rewrite, and it skips binaries, .git and ignored build output.
+git grep -qF "$OLD_MODULE" || die "no references to $OLD_MODULE found — is this a clone of the template?"
+REWRITTEN=$(git grep -lF "$OLD_MODULE" | wc -l | tr -d ' ')
+
+# shellcheck disable=SC2016
+git grep -lzF "$OLD_MODULE" | xargs -0 perl -pi -e 's{\Q$ENV{OLD_MODULE}\E}{$ENV{NEW_MODULE}}g'
 
 MODE=apply
 anchors
 
-command -v go >/dev/null 2>&1 || die "renamed, but Go is not installed — install Go and run: go build ./..."
-go build ./... || die "renamed, but the tree does not compile — see the error above"
+# A failed build is deliberately not rolled back. The compile error points at
+# files in the renamed tree, which is where it has to be read, and every write
+# above went to a tracked file, so git already is the undo.
+go build ./... || die "renamed, but the tree does not compile — see the error above. The rename is left in place; \`git restore .\` undoes it"
 
 printf '%b\n' "${GREEN}✓ $OLD_MODULE → $NEW_MODULE$OFF"
 printf '%b\n' "${DIM}  service name: $NEW_NAME$OFF"
-printf '%b\n' "${DIM}  rewritten:    $(printf '%s\n' "$FILES" | wc -l | tr -d ' ') files, plus 5 name references$OFF"
+printf '%b\n' "${DIM}  rewritten:    $REWRITTEN files, plus 5 name references$OFF"
 printf '%b\n' "${DIM}  go build:     ok$OFF"
 printf '\n'
 printf '%s\n' "Next:"

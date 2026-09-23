@@ -59,9 +59,12 @@ Four properties it guarantees, so there is no need to hedge around it:
 - **It is idempotent.** Run against a module that already matches, it prints
   `already <module>` and exits 0. When it is unclear whether a repo has been
   set up, running it is the cheapest way to find out.
-- **It is all-or-nothing.** Every substitution is checked before any is
-  applied, so a non-zero exit means nothing was written and the tree is as it
-  was found. Read the error and stop rather than working around it.
+- **It checks before it writes.** Every substitution is matched, and Go is
+  confirmed installed, before any file is touched, so a non-zero exit means
+  nothing was written — with one exception. If `go build` fails after the
+  rename, the rename is kept and the error says so; `git restore .` undoes it,
+  because only tracked files are ever written. Either way, read the error and
+  stop rather than working around it.
 - **It deletes nothing.** No history reset, no self-deletion, no touching the
   git remote. Repointing `origin` is left to the person doing the fork, and the
   script only reminds them.

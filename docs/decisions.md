@@ -137,6 +137,18 @@ surface once, later, in a fork, to somebody with no idea what the script was
 supposed to match. `./setup.sh --check` runs the same patterns in a mode that
 writes nothing, so that failure happens here instead.
 
+**Why a failed build is not rolled back.** Everything that can be checked
+before writing is — every anchor, and that Go is installed — so a failure there
+leaves the tree untouched. The `go build` at the end is different: it is the
+proof, and it can only run on the renamed tree. When it fails, the compile
+error names files in that tree, which is where someone has to read it, so the
+rename is kept and the message says how to undo it. The undo is git: the script
+only rewrites tracked files (`git grep`, not `grep -r`, which is also what keeps
+an untracked note from being edited), so `git restore .` is complete. Staging
+the rename in a copy or backing up every file would put a small transaction
+manager in a POSIX shell script that every fork inherits, to duplicate what git
+already does.
+
 **Why it does not reset git history.** Offering `rm -rf .git && git init`
 behind a prompt was considered and rejected. A prompt is a hang for anything
 non-interactive, and an agent that does answer it answers it blindly; the
