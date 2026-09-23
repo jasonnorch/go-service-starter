@@ -80,7 +80,9 @@ func newRouter(cfg *config.Config, logger *slog.Logger, version string, checker 
 	mux := http.NewServeMux()
 	routes := httpapi.NewGroup(mux, logger)
 
-	routes.Handle("GET /healthz", checker.Live())
+	// Probe paths follow Kubernetes' current names; see docs/decisions.md,
+	// "/livez and /readyz".
+	routes.Handle("GET /livez", checker.Live())
 	routes.Handle("GET /readyz", checker.Ready())
 	routes.HandleFunc("GET /info", infoHandler(cfg, logger, version))
 
@@ -108,7 +110,7 @@ func newRouter(cfg *config.Config, logger *slog.Logger, version string, checker 
 		httpapi.Fallback(mux, logger),
 		middleware.RequestID(),
 		middleware.SecurityHeaders(),
-		middleware.RequestLogger(logger, "/healthz", "/readyz"),
+		middleware.RequestLogger(logger, "/livez", "/readyz"),
 		middleware.Recover(logger),
 		middleware.BodyLimit(cfg.Server.BodyLimit, logger),
 	)

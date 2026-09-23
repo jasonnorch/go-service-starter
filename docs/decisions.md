@@ -170,6 +170,39 @@ substitution passes straight out of it.
 
 ---
 
+## /livez and /readyz
+
+**The decision.** Liveness is served at `/livez` and readiness at `/readyz`.
+There is no `/health`, and no `/healthz`.
+
+**Why the trailing z.** It is a convention from Google's internal diagnostic
+pages (`/statusz`, `/varz`), which Kubernetes made public. It keeps probe paths
+out of the application's namespace. A service may well have a real `/health` or
+`/status` resource, such as a health-records API or a job-status endpoint, but
+nobody names a business route `/livez`. The suffix also marks the path as
+infrastructure, meant for an orchestrator rather than a client. A fork that
+"tidies" these to `/health` gives up both.
+
+**Why /livez rather than /healthz.** `/healthz` is the older name, and
+Kubernetes has deprecated it for its own API server in favor of `/livez`,
+leaving `/livez` and `/readyz` as a matched pair. `/healthz` also says less: it
+reads as "is everything healthy?", and that question is readiness's. Liveness
+consults nothing (see "Liveness consults nothing" in AGENTS.md), and a name
+that invites someone to add a dependency check to it is how an outage in one
+dependency becomes a restart of every instance. `/livez` names what the probe
+is for.
+
+**To swap it.** The paths appear in three places: the routes in `newRouter`
+(`internal/app/app.go`), the quiet-path list given to `RequestLogger` beside
+them, and the Dockerfile `HEALTHCHECK`. Change all three together. The logger
+list matters most, because a probe path missing from it is logged on every
+poll, which is tens of thousands of lines a day. Anything outside the repo
+that probes the old path, such as Kubernetes manifests or a load balancer
+health check, must change in the same deploy, or the next restart
+fails its probes.
+
+---
+
 ## Load-bearing details that look removable
 
 ### The embedded defaults must list every key

@@ -32,7 +32,7 @@ process.
 | **Logging** | `log/slog`, passed as a parameter. Text or JSON. |
 | **Errors** | One JSON envelope for every failure, including 404 and 405. |
 | **Middleware** | Recover, request ID, security headers, body limit, access log. |
-| **Health** | `/healthz` and `/readyz`, with pluggable readiness checks. |
+| **Health** | `/livez` and `/readyz`, with pluggable readiness checks. |
 | **Shutdown** | Signal, drain in-flight requests, force-close on a second signal. |
 | **Tooling** | `make verify`, golangci-lint, GitHub Actions, multi-stage Dockerfile. |
 
@@ -141,7 +141,7 @@ internal/requestid/      the correlation ID's context key
 
 | Method | Path | |
 |---|---|---|
-| GET | `/healthz` | Liveness. Consults nothing — it answers "is this process working?" |
+| GET | `/livez` | Liveness. Consults nothing — it answers "is this process working?" |
 | GET | `/readyz` | Readiness. Runs every registered check; 503 if any fails. |
 | GET | `/info` | Name, version, environment, uptime. |
 
