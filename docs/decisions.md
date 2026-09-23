@@ -340,8 +340,10 @@ Docker locally and a service container in CI.
 renaming the migration files. A different driver means rewriting `Open` and
 the code that takes the pool. A different database means `internal/postgres`,
 the block in `app.Run`, the `postgres` section of the config,
-`compose.yaml`, and every store that queries the pool (today,
-`internal/auth/pgstore`). To drop Postgres entirely,
+`compose.yaml`, every store that queries the pool (today,
+`internal/auth/pgstore`), and the two places integration tests find a
+database: `POSTGRES_URL` in the Makefile's `test-integration` target, and the
+`postgres` service in the CI integration job. To drop Postgres entirely,
 `./setup.sh --without postgres`.
 
 ---
