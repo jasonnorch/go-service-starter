@@ -19,9 +19,10 @@ import "time"
 // loading target and the reported state, with no hand-maintained snapshot type
 // to fall out of sync.
 type Config struct {
-	Service Service `mapstructure:"service" json:"service"`
-	Server  Server  `mapstructure:"server"  json:"server"`
-	Log     Log     `mapstructure:"log"     json:"log"`
+	Service  Service  `mapstructure:"service"  json:"service"`
+	Server   Server   `mapstructure:"server"   json:"server"`
+	Log      Log      `mapstructure:"log"      json:"log"`
+	Postgres Postgres `mapstructure:"postgres" json:"postgres"`
 }
 
 // Service holds the service's identity.
@@ -64,3 +65,20 @@ const (
 	FormatText = "text"
 	FormatJSON = "json"
 )
+
+// Postgres holds the database pool's parameters. Passed whole to postgres.Open.
+type Postgres struct {
+	// URL is a libpq connection string. It is a Secret because it carries the
+	// password.
+	URL            Secret        `mapstructure:"url"              json:"url"`
+	MaxConns       int32         `mapstructure:"max_conns"        json:"max_conns"`
+	ConnectTimeout time.Duration `mapstructure:"connect_timeout"  json:"connect_timeout"`
+	MigrateOnStart bool          `mapstructure:"migrate_on_start" json:"migrate_on_start"`
+}
+
+// DevPostgresURL is the default postgres.url: the database compose.yaml runs,
+// so `make up && make run` works on a fresh clone. Validate rejects it in
+// production, which turns a deploy that forgot POSTGRES_URL into a startup
+// error rather than a service quietly dialing localhost. A test holds
+// defaults.yaml to this value, so the two cannot drift.
+const DevPostgresURL = "postgres://app:app@localhost:5432/app?sslmode=disable" //nolint:gosec // the local compose container's credentials, rejected in production by Validate

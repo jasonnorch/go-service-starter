@@ -47,8 +47,11 @@ jobs:
       - name: go mod tidy is clean
         run: go mod tidy -diff
 
+      # -tags integration so the integration tests are compiled and vetted here
+      # too. They only run in the job below, which needs a database; a change
+      # that breaks their build should still fail the fast job.
       - name: go vet
-        run: go vet ./...
+        run: go vet -tags integration ./...
 
       - name: Build
         run: go build ./...
@@ -68,7 +71,7 @@ jobs:
       # by default, which on a gate means a PR can pass having been told about
       # only some of what it introduced.
       - name: golangci-lint
-        run: golangci-lint run --timeout 10m --max-issues-per-linter=0 --max-same-issues=0 ./...
+        run: golangci-lint run --timeout 10m --max-issues-per-linter=0 --max-same-issues=0 --build-tags integration ./...
 
       # -race because the server, the health checks and the shutdown path are
       # all concurrent, and a data race that only shows up under load is not
@@ -76,6 +79,42 @@ jobs:
       # green run means the tests actually ran.
       - name: Test
         run: go test -race -count=1 ./...
+
+  integration:
+    name: Integration tests
+    runs-on: ubuntu-latest
+    # The same image and credentials as compose.yaml, so a test that passes
+    # under `make test-integration` passes here for the same reasons.
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: app
+          POSTGRES_PASSWORD: app
+          POSTGRES_DB: app
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U app -d app"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # The integration tests fail rather than skip without POSTGRES_URL, so a
+      # missing service here is a red job, not a green one that tested nothing.
+      - name: Integration tests
+        env:
+          POSTGRES_URL: postgres://app:app@localhost:5432/app?sslmode=disable
+        run: go test -race -count=1 -tags integration ./...
 
   docker:
     name: Docker image builds

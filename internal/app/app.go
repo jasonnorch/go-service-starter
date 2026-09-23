@@ -23,6 +23,7 @@ import (
 	"github.com/jasonnorch/go-service-starter/internal/httpapi/respond"
 	"github.com/jasonnorch/go-service-starter/internal/logging"
 	"github.com/jasonnorch/go-service-starter/internal/middleware"
+	"github.com/jasonnorch/go-service-starter/internal/postgres"
 )
 
 // Run starts the service and blocks until it shuts down.
@@ -56,10 +57,19 @@ func Run(ctx context.Context, version string) error {
 	appCtx, appCancel := context.WithCancel(ctx)
 	defer appCancel()
 
-	// Readiness checks are registered here as dependencies are added — a
-	// Postgres pool registers its own ping, and this package never learns what
-	// a Postgres pool is.
+	// Readiness checks are registered here as dependencies are added; each
+	// dependency supplies its own check, and internal/health never learns what
+	// any of them is.
 	checker := health.New(logger, cfg.Server.ReadTimeout)
+
+	pool, err := postgres.Open(ctx, cfg.Postgres, logger)
+	if err != nil {
+		return fmt.Errorf("opening postgres: %w", err)
+	}
+	// A defer, not appCtx: appCancel runs before the server drains, and the
+	// requests still in flight need the pool until Serve returns.
+	defer pool.Close()
+	checker.Register("postgres", pool.Ping)
 
 	server := httpapi.NewServer(newRouter(cfg, logger, version, checker), cfg.Server)
 

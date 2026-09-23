@@ -9,3 +9,4 @@ config.yaml
 *.md
 docs
 setup.sh
+compose.yaml

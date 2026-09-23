@@ -82,10 +82,10 @@ of the program: `config.Config().GetString("server.read_timeout")` at a call
 site has no compiler check, no rename safety, and no way to discover what keys
 exist except by grepping.
 
-**What it costs.** One direct dependency that brings twelve indirect ones — by
-some distance the largest thing in `go.sum`, in a repo that is otherwise
-standard library. That trade is worth naming, and it is the most likely thing in
-here for a fork to disagree with.
+**What it costs.** One direct dependency that brings twelve indirect ones — the
+largest single contributor to `go.sum`, for a job the standard library could
+almost do. That trade is worth naming, and it is the most likely thing in here
+for a fork to disagree with.
 
 **To swap it.** `Load()` in `internal/config/load.go` is the entire surface.
 Replacing Viper with koanf, `envconfig`, or hand-rolled YAML plus `os.Getenv` is
@@ -200,6 +200,77 @@ poll, which is tens of thousands of lines a day. Anything outside the repo
 that probes the old path, such as Kubernetes manifests or a load balancer
 health check, must change in the same deploy, or the next restart
 fails its probes.
+
+---
+
+## Postgres via pgx and goose
+
+**The decision.** The service has a Postgres pool, opened in `app.Run` from
+`internal/postgres`, with schema migrations embedded in the binary and applied
+at startup by goose. pgx and goose are imported nowhere else.
+
+**Why include a database at all.** An earlier version left Postgres out on the
+grounds that "everyone's version differs". For a Go HTTP service that is mostly
+not true. pgx is the settled choice of driver, and most services that fork a
+starter like this need a database. Leaving it out meant every fork rebuilt the
+part where the patterns matter most, without guidance:
+
+- when the pool closes during shutdown
+- a readiness check that honors its deadline
+- migrations that run before the server serves
+- a password that never reaches a log
+
+**Why pgx directly, not database/sql.** pgx's native interface is faster, and
+it exposes Postgres types that `database/sql` flattens away. `database/sql`
+buys driver portability, which no one needs from a service that has already
+chosen Postgres. goose does need `database/sql`, so `Migrate` borrows the pool
+through `stdlib.OpenDBFromPool` for the length of one migration run.
+
+**Why goose.** It is the migration tool Go developers are most likely to know
+already. It reads plain SQL files, which makes migrations reviewable as SQL.
+It runs from an embedded filesystem through its Go API, so a deploy cannot ship
+code without the schema it expects. It also has a session locker built on a
+Postgres advisory lock. The package-level migration registry is turned off, so
+every migration the service runs is a file in `internal/postgres/migrations`.
+
+**Why there is no repository interface.** Handlers and stores take
+`*pgxpool.Pool` and write SQL. A `UserRepository` interface in front of every
+table is the abstraction every caller pays for and almost no service uses:
+swapping databases rewrites the queries anyway, and tests that need real SQL
+behavior need a real database, which the integration tests have.
+
+**Why startup fails without a database.** A service that starts with no
+database reports ready, takes traffic, and fails every request that needs it.
+So `Open` pings within `postgres.connect_timeout`, and `app.Run` returns the
+error. For the same reason, `Validate` rejects the development default URL in
+production. A deploy that forgot `POSTGRES_URL` fails with a configuration
+error that names the key, rather than a connection error to localhost that
+looks like an outage.
+
+**Why the pool closes on a defer, not appCtx.** `appCancel` runs before the
+server drains, which is right for background workers and wrong for a pool. The
+requests still in flight need their connections until `Serve` returns.
+
+**Why migrations take a lock.** Instances of a deployment start together, and
+each runs `Migrate`. Without the advisory lock they all see a new migration as
+pending, all apply it, and all but one fail startup on "relation already
+exists". `TestMigrateSerializesConcurrentInstances` reproduces exactly that
+with the lock removed. It has to start from an already-migrated database: on a
+fresh one, the instances instead contend on goose creating its version table,
+which goose retries its way out of, lock or no lock. A test starting there
+passes with the lock removed. Waiting instances poll every 5 seconds, which is
+the cost of the lock at startup.
+
+**What it costs.** Two direct dependencies (pgx and goose), which bring seven
+indirect ones. `make run` now needs a database, so there is a `compose.yaml`
+and a `make up` step, and the quickstart grew a line. Integration tests need
+Docker locally and a service container in CI.
+
+**To swap it.** A different migration tool means rewriting `Migrate` and
+renaming the migration files. A different driver means rewriting `Open` and
+the code that takes the pool. A different database means `internal/postgres`,
+the block in `app.Run`, the `postgres` section of the config, and
+`compose.yaml`. Nothing else imports any of them.
 
 ---
 

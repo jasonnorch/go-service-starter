@@ -48,6 +48,20 @@ func (c *Config) Validate() error {
 			FormatText, FormatJSON, c.Log.Format))
 	}
 
+	switch {
+	case !c.Postgres.URL.IsSet():
+		errs = append(errs, errors.New("postgres.url: must not be empty"))
+	case c.Service.Production() && c.Postgres.URL.Reveal() == DevPostgresURL:
+		// Comparing the whole string, not the host: a production database on
+		// localhost is unusual but legitimate, and only the literal default is
+		// certain to be a mistake.
+		errs = append(errs, errors.New("postgres.url: production is still using the development default; set POSTGRES_URL"))
+	}
+	if c.Postgres.MaxConns < 1 {
+		errs = append(errs, fmt.Errorf("postgres.max_conns: must be at least 1, got %d", c.Postgres.MaxConns))
+	}
+	errs = append(errs, positiveDuration("postgres.connect_timeout", c.Postgres.ConnectTimeout))
+
 	// errors.Join drops nils, so the unconditional appends above cost nothing
 	// and it returns nil when every check passed.
 	return errors.Join(errs...)

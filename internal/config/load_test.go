@@ -19,7 +19,7 @@ import (
 // prefixes can change what Load returns. Matching on the prefix rather than
 // listing every key means a new key under an existing section is isolated
 // automatically; only a new top-level section needs adding here.
-var configEnvPrefixes = []string{"SERVICE_", "SERVER_", "LOG_"}
+var configEnvPrefixes = []string{"SERVICE_", "SERVER_", "LOG_", "POSTGRES_"}
 
 // isolate removes every input Load reads except the embedded defaults: the
 // working directory is moved somewhere with no config.yaml, and any
@@ -90,6 +90,11 @@ func TestLoadDefaultsAreCompleteAndValid(t *testing.T) {
 	}
 	if cfg.Log.Format != config.FormatText {
 		t.Errorf("log.format = %q, want %q", cfg.Log.Format, config.FormatText)
+	}
+	// Validate rejects DevPostgresURL in production by exact comparison, so the
+	// file drifting from the constant would silently disable that check.
+	if got := cfg.Postgres.URL.Reveal(); got != config.DevPostgresURL {
+		t.Errorf("postgres.url default = %q, want config.DevPostgresURL", got)
 	}
 }
 
