@@ -59,11 +59,11 @@ code across five files — and the composability is kept:
 // request ID all follow from one place.
 func (h *Handler) GetUser(w http.ResponseWriter, r *http.Request) error {
     user, err := h.store.User(r.Context(), r.PathValue("id"))
-    if errors.Is(err, store.ErrNotFound) {
-        return respond.NotFound("no such user").Because(err)
-    }
     if err != nil {
-        return err // becomes a 500; the cause is logged, never sent
+        // store.ErrNotFound becomes a 404 through one case in respond's
+        // asError, not a check repeated here; anything unrecognized becomes a
+        // 500 whose cause is logged, never sent.
+        return err
     }
 
     respond.JSON(w, h.logger, http.StatusOK, user)

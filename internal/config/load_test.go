@@ -1,11 +1,15 @@
 package config_test
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/spf13/viper"
 
 	"github.com/jasonnorch/go-service-starter/internal/config"
 )
@@ -86,6 +90,53 @@ func TestLoadDefaultsAreCompleteAndValid(t *testing.T) {
 	}
 	if cfg.Log.Format != config.FormatText {
 		t.Errorf("log.format = %q, want %q", cfg.Log.Format, config.FormatText)
+	}
+}
+
+// defaults.yaml must list every key in Config, because reading it is what
+// registers a key with Viper, and AutomaticEnv reaches only registered keys. A
+// field added to the struct but not the file still loads its zero value and
+// still starts, while its environment variable is silently ignored — nothing
+// else fails, so this test is the only thing standing between that and
+// production. The reverse direction catches a key in the file that matches no
+// field, which is a typo that loads nothing.
+func TestDefaultsListEveryKey(t *testing.T) {
+	v := viper.New()
+	v.SetConfigType("yaml")
+	if err := v.ReadConfig(bytes.NewReader(config.DefaultsYAML)); err != nil {
+		t.Fatalf("reading embedded defaults: %v", err)
+	}
+	inFile := map[string]bool{}
+	for _, key := range v.AllKeys() {
+		inFile[key] = true
+	}
+
+	inStruct := map[string]bool{}
+	collectKeys(reflect.TypeFor[config.Config](), "", inStruct)
+
+	for key := range inStruct {
+		if !inFile[key] {
+			t.Errorf("%s is in config.Config but not defaults.yaml; its environment variable would be ignored", key)
+		}
+	}
+	for key := range inFile {
+		if !inStruct[key] {
+			t.Errorf("%s is in defaults.yaml but matches no field in config.Config", key)
+		}
+	}
+}
+
+// collectKeys walks a config struct and records the dotted key of every leaf,
+// the way Viper names them. Nested structs are sections; everything else,
+// including time.Duration and Secret, is a value.
+func collectKeys(typ reflect.Type, prefix string, keys map[string]bool) {
+	for field := range typ.Fields() {
+		key := prefix + field.Tag.Get("mapstructure")
+		if field.Type.Kind() == reflect.Struct {
+			collectKeys(field.Type, key+".", keys)
+			continue
+		}
+		keys[key] = true
 	}
 }
 
