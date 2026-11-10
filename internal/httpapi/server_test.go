@@ -394,15 +394,16 @@ func TestServeForcesCloseOnTheSecondSignalAfterContextShutdown(t *testing.T) {
 // A port already in use has to surface as an error rather than a process that
 // looks started and is serving nothing.
 func TestServeReportsListenFailure(t *testing.T) {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
+	// The wildcard address, which is what NewServer binds. Occupying only
+	// 127.0.0.1 collides on Linux, but a BSD-derived stack can allow a wildcard
+	// bind beside a specific one when SO_REUSEADDR is set, as Go sets it.
+	l, err := net.Listen("tcp", ":0")
 	if err != nil {
 		t.Fatalf("occupying a port: %v", err)
 	}
 	defer func() { _ = l.Close() }()
 
 	server := httpapi.NewServer(http.NewServeMux(), serverConfig(l.Addr().(*net.TCPAddr).Port, time.Second))
-	// The occupied listener is bound to 127.0.0.1 while NewServer listens on
-	// all interfaces, which still collides.
 	appCancelled := false
 
 	served := make(chan error, 1)
