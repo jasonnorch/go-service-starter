@@ -29,6 +29,15 @@ func (r *recorder) WriteHeader(status int) {
 	if r.wrote {
 		return
 	}
+	// 1xx statuses other than 101 are informational: net/http sends them at
+	// once and still expects a final status afterwards. They pass through
+	// without being recorded, or the real status would be dropped as a second
+	// WriteHeader and Recover would think the response had begun. 101 is
+	// final, because it hands the connection over.
+	if status >= http.StatusContinue && status < http.StatusOK && status != http.StatusSwitchingProtocols {
+		r.ResponseWriter.WriteHeader(status)
+		return
+	}
 	r.status = status
 	r.wrote = true
 	r.ResponseWriter.WriteHeader(status)
