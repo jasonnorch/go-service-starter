@@ -31,6 +31,7 @@ internal/auth/             API-key middleware and key stores     # module:auth
 cmd/apikey/                generate a key, print what to store   # module:auth
 internal/requestid/        the correlation ID's context key
 docs/decisions.md          why each opinion is what it is, and how to swap it
+docs/new-service.md        start a service from this template; follow it in order
 config.example.yaml        symlink to internal/config/defaults.yaml — never a copy
 compose.yaml               local Postgres and Redis for `make run` # module:postgres+cache
 ```
@@ -61,6 +62,15 @@ compose.yaml               local Postgres and Redis for `make run` # module:post
 
 ## Forking this template
 
+**A new service is an export of this repo, never a clone of it.**
+`docs/new-service.md` is the procedure, start to finish: export the tracked
+files into the new directory, commit the import, run `./setup.sh`, then detach
+— delete `setup.sh`, the module markers, and the docs that describe the
+template. Follow that file in order rather than reconstructing it from this
+section. Cloning and then working in the clone is the mistake it exists to
+prevent: the result builds, passes `make verify`, and is still this repo, with
+its history, its `origin` and its README.
+
 `./setup.sh github.com/you/yourthing` runs **before** `make verify`, not after.
 Verifying first only proves the starter compiles, which it already did. The
 script rewrites the module path through every import, plus the five places the
@@ -70,7 +80,8 @@ the `README.md` and `AGENTS.md` titles, and the CI image tag — then runs
 
 `--without <module>,...` removes modules: their package, and every line
 elsewhere marked `module:<name>` (see "Modules" below). It works at setup or
-any time after, on a tree that is already renamed.
+any time after, on a tree that is already renamed — until the service detaches
+and deletes the script.
 
 Four properties it guarantees, so there is no need to hedge around it:
 
@@ -89,9 +100,11 @@ Four properties it guarantees, so there is no need to hedge around it:
   Either way, read the error and stop rather than working around it.
 - **It deletes only what `--without` names.** Only the tracked files of the
   named modules, and it refuses if one of their directories holds untracked
-  files. No history reset, no self-deletion, no touching the git remote.
-  Repointing `origin` is left to the person doing the fork, and the script
-  only reminds them.
+  files. No history reset, no self-deletion, no touching the git remote. A
+  service gets a history of its own by being exported rather than cloned, and
+  loses `setup.sh` by hand, both in `docs/new-service.md`. Run in a clone
+  whose `origin` is still the template, the script says so and changes nothing
+  about it.
 
 **Never rename by hand, and never `sed` the bare service name across the
 tree.** The name is a substring of real identifiers here. Fork this to

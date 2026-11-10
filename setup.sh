@@ -1,5 +1,7 @@
 #!/bin/sh
-# setup.sh — the first thing you run in a fresh clone of this template.
+# setup.sh — the first thing you run in a fresh copy of this template, once its
+# files are committed. It is one step of docs/new-service.md, which is the
+# whole procedure for starting a service: export, commit, this, then detach.
 #
 # Rewrites the module path and every place the starter's own name is baked in,
 # removes any modules named with --without, then compiles the result to prove
@@ -26,6 +28,10 @@ compiles.
 
   ./setup.sh github.com/you/yourthing
   ./setup.sh github.com/you/yourthing --without postgres
+
+This is one step of starting a service, not all of it. docs/new-service.md has
+the rest: how to copy the template without its history before this runs, and
+what to delete, this script included, once it has.
 
 The argument is a full module path, not a bare name: it is what goes in go.mod
 and what every import in the tree becomes. The service name is its last segment
@@ -133,6 +139,15 @@ git rev-parse --is-inside-work-tree >/dev/null 2>&1 ||
 	die "not a git checkout — setup.sh rewrites tracked files, so it needs one"
 
 [ -f go.mod ] || die "no go.mod here — run this from a clone of the template"
+
+# Everything below reads the tree through git, so a copy that has been
+# `git init`ed but not committed looks empty to it: no markers anywhere, no
+# module path to find. Left to run, that surfaces further down as "modules are
+# half-present" with advice to remove what is left by hand, which is wrong, and
+# is advice an agent would take. docs/new-service.md reaches this state one
+# step before it runs the script, so it gets an error that says what to do.
+git ls-files --error-unmatch go.mod >/dev/null 2>&1 ||
+	die "go.mod is not tracked — commit the template's files first (git add -A && git commit), then re-run; nothing was written"
 
 # ---------------------------------------------------------------------------
 # Modules
@@ -593,8 +608,26 @@ fi
 printf '%b\n' "${DIM}  go build, go vet: ok$OFF"
 printf '\n'
 printf '%s\n' "Next:"
-if [ "$RENAME" = 1 ]; then
-	printf '%s\n' "  git remote set-url origin git@github.com:you/$NEW_NAME.git   # still points at the template"
-fi
 printf '%s\n' "  make verify"
-printf '%s\n' "  git commit -am 'Set up from go-service-starter'"
+if [ "$RENAME" = 1 ]; then
+	# The rename is half of making this a service of its own. The other half is
+	# deletion, of this script among other things, and the commit comes after it.
+	printf '%s\n' "  docs/new-service.md, from \"Detach from the template\": remove setup.sh,"
+	printf '%s\n' "  the module markers and the template's own docs, then commit"
+
+	# Said, not fixed. A clone of the template passes every check above and is
+	# still the template's repository, history and all, which is how a service
+	# built from it has already gone wrong. Putting that right means a new
+	# repository, and that is not this script's to create or delete.
+	origin=$(git remote get-url origin 2>/dev/null || true)
+	case $origin in
+	*"${OLD_MODULE#*/}" | *"${OLD_MODULE#*/}.git")
+		printf '\n'
+		printf '%b\n' "${RED}! origin is still $origin$OFF"
+		printf '%s\n' "  This is a clone of the template and carries its history."
+		printf '%s\n' "  docs/new-service.md, \"If you already cloned\", moves it to a repo of its own."
+		;;
+	esac
+else
+	printf '%s\n' "  git commit -am 'Set up from go-service-starter'"
+fi
