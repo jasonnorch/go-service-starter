@@ -525,3 +525,67 @@ func TestRequestLoggerLogsTheStatusCommittedByAFlush(t *testing.T) {
 		t.Errorf("status = %v, want 200 — a flush commits the response", line["status"])
 	}
 }
+
+// net/http lets a handler send informational headers, such as 103 Early Hints,
+// before the final status. A recorder that takes the first WriteHeader as the
+// response drops the real one: the client receives net/http's implicit 200,
+// the access log reports 103, and Recover believes the response has started
+// and sends nothing after a panic.
+//
+// These run against a real server. httptest.NewRecorder treats any first
+// WriteHeader as final, so it cannot show what a client would receive.
+func TestRecorderPassesInformationalStatusesThrough(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		handler http.HandlerFunc
+		want    int
+	}{
+		{
+			name: "the final status after an informational one reaches the client",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusEarlyHints)
+				w.WriteHeader(http.StatusCreated)
+			},
+			want: http.StatusCreated,
+		},
+		{
+			name: "a panic after an informational status still becomes a 500",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusEarlyHints)
+				panic("boom")
+			},
+			want: http.StatusInternalServerError,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logger, logged := capture()
+			srv := httptest.NewServer(middleware.RequestLogger(logger)(middleware.Recover(discard())(tc.handler)))
+			defer srv.Close()
+
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL, http.NoBody)
+			if err != nil {
+				t.Fatalf("building the request: %v", err)
+			}
+			resp, err := srv.Client().Do(req)
+			if err != nil {
+				t.Fatalf("request failed: %v", err)
+			}
+			_ = resp.Body.Close()
+			// Close waits for the handler to return, so the log line is
+			// complete before it is read.
+			srv.Close()
+
+			if resp.StatusCode != tc.want {
+				t.Errorf("client received %d, want %d", resp.StatusCode, tc.want)
+			}
+
+			var line map[string]any
+			if err := json.Unmarshal(logged.Bytes(), &line); err != nil {
+				t.Fatalf("log line is not JSON: %s", logged.String())
+			}
+			if line["status"] != float64(tc.want) {
+				t.Errorf("logged status = %v, want %d", line["status"], tc.want)
+			}
+		})
+	}
+}
