@@ -165,6 +165,40 @@ history of the wrong repo. The saving is one `git init`. Because the script
 neither prompts nor destroys anything it was not asked to, nobody has to read it
 before running it, which is worth more than the step it would save.
 
+**Why a new service is exported, not cloned.** The quickstart used to be
+`git clone` and `./setup.sh`, and an agent that followed it produced a service
+that built, passed `make verify`, and was still this repo: its history, its
+`origin`, its README. Nothing failed, which is why nothing stopped it.
+`docs/new-service.md` starts from `git archive HEAD | tar -x` instead, which
+copies the tracked files and no `.git`. A tree that never had the history needs
+no reset, so the question above is answered without a destructive command
+existing anywhere in the procedure. GitHub's template-repository flag does the
+same thing in one click, but only on GitHub and only by creating a remote
+repository, and creating that is the owner's step rather than the first one.
+The script helps in two small ways: it refuses a tree whose import is not
+committed, with an error that says so, and when `origin` still names the
+template it says that the repo is a clone and points at the way out. It changes
+nothing about either.
+
+**Why detaching is a written procedure and not a flag.** Once a service
+exists, `setup.sh`, the markers it reads and the `verify-without` target that
+tests it are machinery for a job that is finished, and the README, this file's
+two sections on them and half of `AGENTS.md` describe a template the service
+is not. `docs/new-service.md` lists what to remove and ends with two `git
+grep` commands that define done, so the greps and `make verify`, not the list,
+are what catch a step the list has drifted away from. Most of it is prose that
+takes judgment — what a service's README should say is not something a script
+knows.
+
+**What that costs.** The mechanical part — around a hundred marker comments
+and a handful of edits to the Makefile and CI — is done by hand in every new
+service, and
+nothing on `main` exercises it the way `verify-without` exercises removal. It
+has one trap, which the procedure names: stripping a trailing marker changes
+gofmt's alignment of the lines around it. If that part goes wrong in practice,
+it belongs in the script as a mode that CI runs, and the guarantee to give up
+in exchange is "no self-deletion".
+
 **To swap it.** It is one self-contained file with no dependency on the rest of
 the repo. A fork that would rather have `make rename` back can lift the two
 substitution passes straight out of it.
@@ -234,7 +268,8 @@ of perl inside `setup.sh`.
 **To swap it.** A fork that will never remove anything can ignore the markers.
 They are comments. Deleting the `--without` half of `setup.sh` and the
 `verify-without` target removes the machinery, and `./setup.sh --check` stops
-checking markers along with it.
+checking markers along with it. A service that detaches from the template
+removes all of it, markers included; `docs/new-service.md` is how.
 
 ---
 

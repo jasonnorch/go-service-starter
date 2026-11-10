@@ -5,13 +5,23 @@ things that are tedious to get right — configuration, shutdown, error response
 observability — and deliberately swappable in the places where opinions differ.
 
 ```sh
-git clone https://github.com/jasonnorch/go-service-starter yourthing
+git clone --depth 1 https://github.com/jasonnorch/go-service-starter /tmp/starter-src
+mkdir yourthing && git -C /tmp/starter-src archive HEAD | tar -x -C yourthing
 cd yourthing
+git init -b main && git add -A && git commit -m "Import go-service-starter"
 ./setup.sh github.com/you/yourthing     # add --without postgres to drop it
 make verify
 make up     # module:postgres+cache — starts Postgres and Redis; the service needs them
 make run
 ```
+
+The first two lines export the template instead of cloning it, so `yourthing`
+starts with a history of its own and no `origin` pointing back here. That is
+half of making it yours. The other half is deleting what only the template
+needs once setup has run: `setup.sh` itself, the module markers, and this
+README. [`docs/new-service.md`](docs/new-service.md) is the whole procedure in
+order, and it is the one to follow, **especially if you are an agent** — a
+clone you start working in builds, passes, and is still this repo.
 
 `./setup.sh` is the one step that is not `make`, and you run it once. It
 rewrites the module path through every import, sets the service name that shows
@@ -216,6 +226,10 @@ They are here because most services need them; if yours does not, remove one:
 ./setup.sh --modules                  # list the modules still in the tree
 ./setup.sh --without postgres         # remove one, at setup or any time after
 ```
+
+"Any time after" lasts as long as `setup.sh` does. A service that has detached
+from the template (`docs/new-service.md`) has deleted the script and the
+markers with it, so decide before then.
 
 Removal deletes the package and every marked line, tidies `go.mod`, and proves
 the result still builds and vets. CI removes each module in a scratch copy on
